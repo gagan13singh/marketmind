@@ -2,7 +2,15 @@ import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { base32Decode, generateTotp, secondsUntilNextWindow } from "@/lib/data/angel/totp";
 import { __toInstrumentForTests as toInstrument, resetInstruments } from "@/lib/data/angel/instruments";
-import { angelStatus } from "@/lib/data/angel";
+import {
+  angelStatus,
+  isWeekday,
+  istNow,
+  sessionHasOpened,
+  todaySessionOpen,
+  withTodayBar,
+} from "@/lib/data/angel";
+import type { Candle } from "@/types";
 
 /**
  * The Angel One integration cannot be exercised end to end without live
@@ -202,5 +210,86 @@ describe("angel status when unconfigured", () => {
       if (saved === undefined) delete process.env.ANGEL_API_KEY;
       else process.env.ANGEL_API_KEY = saved;
     }
+  });
+});
+
+describe("today's bar", () => {
+  /**
+   * Angel One's historical feed serves settled candles and can lag the current
+   * session by hours — which is why the app showed yesterday's date late in
+   * the evening. Today's bar is rebuilt from the quote endpoint instead, and
+   * these pin the three cases that must not go wrong.
+   */
+  const DAY = 24 * 60 * 60 * 1000;
+  const bar = (time: number, close: number, volume = 1000): Candle => ({
+    time,
+    open: close - 2,
+    high: close + 3,
+    low: close - 4,
+    close,
+    volume,
+  });
+
+  test("appends a genuinely new session", () => {
+    const settled = [bar(0, 100), bar(DAY, 101)];
+    const out = withTodayBar(settled, bar(2 * DAY, 105));
+
+    assert.equal(out.length, 3);
+    assert.equal(out[2].close, 105);
+  });
+
+  test("replaces today's bar rather than stacking a second one", () => {
+    // An open session keeps moving; a bar written once must not sit frozen.
+    const settled = [bar(0, 100), bar(DAY, 101)];
+    const out = withTodayBar(settled, bar(DAY, 109));
+
+    assert.equal(out.length, 2, "must not append a duplicate session");
+    assert.equal(out[1].close, 109, "must reflect the newer price");
+  });
+
+  test("ignores a stale quote on a market holiday", () => {
+    // With nothing trading, the quote endpoint keeps returning the previous
+    // session's numbers. Stamping those with today's date would invent a bar.
+    const yesterday = bar(DAY, 101);
+    const stale = { ...yesterday, time: 2 * DAY };
+
+    assert.deepEqual(withTodayBar([bar(0, 100), yesterday], stale), [bar(0, 100), yesterday]);
+  });
+
+  test("leaves settled history alone when there is no quote", () => {
+    const settled = [bar(0, 100), bar(DAY, 101)];
+    assert.equal(withTodayBar(settled, undefined), settled);
+  });
+
+  test("never rewinds history that is ahead of the quote", () => {
+    const settled = [bar(0, 100), bar(2 * DAY, 105)];
+    assert.equal(withTodayBar(settled, bar(DAY, 99)), settled);
+  });
+});
+
+describe("IST session arithmetic", () => {
+  test("reads the civil date in IST, not UTC", () => {
+    // 19:00 UTC on 8 Sep is already 00:30 on 9 Sep in India. Getting this
+    // wrong is precisely how an evening user sees yesterday's date.
+    const parts = istNow(new Date("2026-09-08T19:00:00Z"));
+    assert.equal(parts.day, 9);
+    assert.equal(parts.month, 9);
+  });
+
+  test("today's session opens at 09:15 IST", () => {
+    const open = todaySessionOpen(new Date("2026-09-09T17:30:00Z")); // 23:00 IST
+    assert.equal(new Date(open).toISOString(), "2026-09-09T03:45:00.000Z");
+  });
+
+  test("knows the weekend is not a trading day", () => {
+    assert.equal(isWeekday(new Date("2026-09-12T06:00:00Z")), false); // Saturday
+    assert.equal(isWeekday(new Date("2026-09-13T06:00:00Z")), false); // Sunday
+    assert.equal(isWeekday(new Date("2026-09-09T06:00:00Z")), true); // Wednesday
+  });
+
+  test("waits for the opening bell before expecting a bar", () => {
+    assert.equal(sessionHasOpened(new Date("2026-09-09T03:00:00Z")), false); // 08:30 IST
+    assert.equal(sessionHasOpened(new Date("2026-09-09T03:45:00Z")), true); // 09:15 IST
+    assert.equal(sessionHasOpened(new Date("2026-09-09T17:30:00Z")), true); // 23:00 IST
   });
 });

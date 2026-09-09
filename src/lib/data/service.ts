@@ -12,7 +12,12 @@ import type {
   Timeframe,
 } from "@/types";
 import { fetchQuoteSummary, num } from "./yahoo";
-import { fetchAngelHistory, fetchAngelQuote } from "./angel";
+import {
+  fetchAngelHistory,
+  fetchAngelQuote,
+  fetchAngelTodayBars,
+  withTodayBar,
+} from "./angel";
 import { resample } from "@/lib/indicators";
 import { sampleCandles, sampleFundamentals, sampleQuote } from "./sample";
 import { displaySymbol, findInUniverse, normalizeSymbol, searchUniverse } from "./universe";
@@ -179,51 +184,85 @@ function remember<T>(key: string, value: T, ttl: number): T {
 // History
 // ---------------------------------------------------------------------------
 
+/**
+ * Settled daily candles, cached.
+ *
+ * Only the daily series is stored, and only the part Angel One considers
+ * settled. Every timeframe is resampled from it, so one cache entry serves the
+ * chart, the analysis engine and the screener, and none of them can disagree
+ * about what the underlying data was.
+ */
+async function settledDaily(symbol: string, range: string): Promise<Sourced<Candle[]>> {
+  const key = `hist:${symbol}:daily:${range}`;
+
+  const cached = cacheGet<Sourced<Candle[]>>(key);
+  if (cached) return cached;
+
+  if (forceSample()) {
+    return remember(
+      key,
+      {
+        data: sampleCandles(symbol, "daily", yearsForRange(range)),
+        origin: "sample",
+        provider: "sample",
+        notice: FORCED_SAMPLE_NOTICE,
+        fetchedAt: stamp(),
+      } satisfies Sourced<Candle[]>,
+      TTL.sampleHistory,
+    );
+  }
+
+  const outcome = await fetchAngelHistory(symbol, range);
+  if (outcome.candles && outcome.candles.length >= 30) {
+    return remember(key, sourced(outcome.candles, "angelone"), TTL.history);
+  }
+
+  // Nothing usable came back. Fall through to sample data, but keep the
+  // reason so the UI can say something more useful than "unavailable".
+  return remember(
+    key,
+    {
+      data: sampleCandles(symbol, "daily", yearsForRange(range)),
+      origin: "sample",
+      provider: "sample",
+      notice: sampleNotice(outcome.reason, outcome.message),
+      fetchedAt: stamp(),
+    } satisfies Sourced<Candle[]>,
+    TTL.sampleHistory,
+  );
+}
+
+/** Reshape a daily series to the requested timeframe, keeping the metadata. */
+function shape(base: Sourced<Candle[]>, daily: Candle[], timeframe: Timeframe): Sourced<Candle[]> {
+  const data = timeframe === "daily" ? daily : resample(daily, timeframe);
+  const last = data[data.length - 1];
+
+  return {
+    ...base,
+    data,
+    asOf: last ? new Date(last.time).toISOString().slice(0, 10) : base.asOf,
+  };
+}
+
 export async function getHistory(
   rawSymbol: string,
   timeframe: Timeframe = "daily",
   range = "5y",
 ): Promise<Sourced<Candle[]>> {
   const symbol = normalizeSymbol(rawSymbol);
-  const key = `hist:${symbol}:${timeframe}:${range}`;
+  const base = await settledDaily(symbol, range);
 
-  const cached = cacheGet<Sourced<Candle[]>>(key);
-  if (cached) return cached;
+  if (base.origin !== "live") return shape(base, base.data, timeframe);
 
-  if (!forceSample()) {
-    // Angel One returns daily candles. Weekly and monthly are resampled from
-    // them rather than requested separately, so every timeframe is derived
-    // from one series and the chart cannot disagree with the analysis engine.
-    const outcome = await fetchAngelHistory(symbol, range);
-
-    if (outcome.candles && outcome.candles.length >= 30) {
-      const daily = outcome.candles;
-      const shaped = timeframe === "daily" ? daily : resample(daily, timeframe);
-      if (shaped.length >= 20) {
-        return remember(key, sourced(shaped, "angelone"), TTL.history);
-      }
-    }
-
-    // Nothing usable came back. Fall through to sample data, but keep the
-    // reason so the UI can say something more useful than "unavailable".
-    const result: Sourced<Candle[]> = {
-      data: sampleCandles(symbol, timeframe, yearsForRange(range)),
-      origin: "sample",
-      provider: "sample",
-      notice: sampleNotice(outcome.reason, outcome.message),
-      fetchedAt: stamp(),
-    };
-    return remember(key, result, TTL.sampleHistory);
-  }
-
-  const result: Sourced<Candle[]> = {
-    data: sampleCandles(symbol, timeframe, yearsForRange(range)),
-    origin: "sample",
-    provider: "sample",
-    notice: FORCED_SAMPLE_NOTICE,
-    fetchedAt: stamp(),
-  };
-  return remember(key, result, TTL.sampleHistory);
+  /**
+   * Today's bar is refreshed on every read rather than cached with the rest.
+   *
+   * Settled history is cached for six hours because it does not change, but
+   * the current session does — a bar cached at 10am would otherwise sit frozen
+   * until the afternoon while the price moved underneath it.
+   */
+  const bars = await fetchAngelTodayBars([symbol]);
+  return shape(base, withTodayBar(base.data, bars.get(symbol)), timeframe);
 }
 
 function yearsForRange(range: string): number {
@@ -634,7 +673,8 @@ export function peekHistory(
   range = "2y",
 ): Sourced<Candle[]> | undefined {
   const symbol = normalizeSymbol(rawSymbol);
-  return cacheGet<Sourced<Candle[]>>(`hist:${symbol}:${timeframe}:${range}`);
+  const base = cacheGet<Sourced<Candle[]>>(`hist:${symbol}:daily:${range}`);
+  return base ? shape(base, base.data, timeframe) : undefined;
 }
 
 export interface BatchOptions {
@@ -696,7 +736,11 @@ export async function getHistoryBatchBudgeted(
       cursor += 1;
 
       try {
-        histories.set(symbol, await getHistory(symbol, timeframe, range));
+        // Deliberately the settled series, not getHistory: that would fire one
+        // quote call per symbol. The batched top-up below covers all of them
+        // in chunks of fifty instead.
+        const base = await settledDaily(normalizeSymbol(symbol), range);
+        histories.set(symbol, shape(base, base.data, timeframe));
       } catch {
         histories.set(symbol, {
           data: sampleCandles(symbol, timeframe, 2),
@@ -714,7 +758,42 @@ export async function getHistoryBatchBudgeted(
     Array.from({ length: Math.min(concurrency, Math.max(pending.length, 1)) }, worker),
   );
 
+  // Top up every symbol in one batched pass. The quote endpoint takes fifty
+  // instruments per call, so a 3,000-name scan costs about sixty extra
+  // requests rather than one per symbol — cheap enough to keep the screener
+  // on the current session instead of yesterday's.
+  await topUpToday(histories);
+
   return { histories, fromCache, fetched, skipped: pending.length - fetched };
+}
+
+/**
+ * Add today's bar to a set of already-fetched histories.
+ *
+ * Failures are silent by design: a missing top-up leaves settled history in
+ * place, which is still correct, just one session behind.
+ */
+async function topUpToday(histories: Map<string, Sourced<Candle[]>>): Promise<void> {
+  const live = [...histories.entries()].filter(([, h]) => h.origin === "live");
+  if (live.length === 0) return;
+
+  try {
+    const bars = await fetchAngelTodayBars(live.map(([symbol]) => symbol));
+    if (bars.size === 0) return;
+
+    for (const [symbol, history] of live) {
+      const topped = withTodayBar(history.data, bars.get(symbol));
+      if (topped === history.data) continue;
+
+      histories.set(symbol, {
+        ...history,
+        data: topped,
+        asOf: new Date(topped[topped.length - 1].time).toISOString().slice(0, 10),
+      });
+    }
+  } catch {
+    // Settled history stands on its own.
+  }
 }
 
 export async function getHistoryBatch(
@@ -732,7 +811,12 @@ export async function getHistoryBatch(
       cursor += 1;
       const symbol = symbols[index];
       try {
-        out.set(symbol, await getHistory(symbol, timeframe, range));
+        // Settled series only. Calling getHistory here would issue one quote
+        // request per symbol for today's bar, which the shared rate limiter
+        // then serialises — forty symbols became a thirteen-second page load.
+        // The batched top-up below does all of them in a single request.
+        const base = await settledDaily(normalizeSymbol(symbol), range);
+        out.set(symbol, shape(base, base.data, timeframe));
       } catch {
         out.set(symbol, {
           data: sampleCandles(symbol, timeframe, 2),
@@ -746,6 +830,7 @@ export async function getHistoryBatch(
   }
 
   await Promise.all(Array.from({ length: Math.min(concurrency, symbols.length) }, worker));
+  await topUpToday(out);
   return out;
 }
 

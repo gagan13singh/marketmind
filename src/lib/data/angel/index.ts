@@ -218,10 +218,12 @@ export async function fetchAngelHistory(
         exchange: "NSE",
         symboltoken: instrument.token,
         interval: "ONE_DAY",
-        // 09:00 to 15:30 brackets the full NSE session with a little margin
-        // on the open, matching the form used in SmartAPI's own examples.
+        // The window runs to end-of-day rather than to the closing bell.
+        // Ending it at 15:30 relies on the boundary being inclusive, and a
+        // range that stops exactly at the last bar's session is the kind of
+        // thing that silently drops today's candle.
         fromdate: `${formatIst(chunk.from).slice(0, 10)} 09:00`,
-        todate: `${formatIst(chunk.to).slice(0, 10)} 15:30`,
+        todate: `${formatIst(chunk.to).slice(0, 10)} 23:59`,
       },
       { circuit: "angel-history" },
     );
@@ -351,6 +353,168 @@ export async function fetchAngelQuote(
     sector: sector ?? null,
     industry: null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Today's bar
+// ---------------------------------------------------------------------------
+
+/**
+ * Angel One's historical feed carries *settled* daily candles. Today's bar can
+ * be absent from it for hours after the close, which leaves the whole app a
+ * session behind on the evening a swing trader is actually reviewing charts.
+ *
+ * The quote endpoint does not have that lag: it reports the day's open, high,
+ * low, last price and volume in real time. Those five numbers are exactly a
+ * daily candle, so today's bar is reconstructed from the quote and appended to
+ * the settled history.
+ *
+ * It also batches — up to 50 instruments per request — so topping up an entire
+ * screener scan costs about sixty extra calls rather than one per symbol.
+ */
+const QUOTE_BATCH = 50;
+
+/** Civil date and time in IST, which has a fixed +05:30 offset year round. */
+export function istNow(at: Date = new Date()): {
+  year: number;
+  month: number;
+  day: number;
+  weekday: number;
+  minutesIntoDay: number;
+} {
+  const ist = new Date(at.getTime() + 5.5 * 60 * 60 * 1000);
+  return {
+    year: ist.getUTCFullYear(),
+    month: ist.getUTCMonth() + 1,
+    day: ist.getUTCDate(),
+    weekday: ist.getUTCDay(),
+    minutesIntoDay: ist.getUTCHours() * 60 + ist.getUTCMinutes(),
+  };
+}
+
+/**
+ * Epoch milliseconds for today's 09:15 IST open.
+ *
+ * Settled candles are timestamped at the open, so a synthesized bar has to use
+ * the same instant or it would sort as a separate session.
+ */
+export function todaySessionOpen(at: Date = new Date()): number {
+  const { year, month, day } = istNow(at);
+  return Date.UTC(year, month - 1, day, 3, 45, 0); // 09:15 IST
+}
+
+/** NSE trades Monday to Friday. Holidays are caught by the staleness check. */
+export function isWeekday(at: Date = new Date()): boolean {
+  const { weekday } = istNow(at);
+  return weekday >= 1 && weekday <= 5;
+}
+
+/** True once the session has opened; before that there is no bar to fetch. */
+export function sessionHasOpened(at: Date = new Date()): boolean {
+  return istNow(at).minutesIntoDay >= 9 * 60 + 15;
+}
+
+function candleFromQuote(raw: RawQuote, time: number): Candle | null {
+  const close = Number(raw.ltp);
+  if (!Number.isFinite(close) || close <= 0) return null;
+
+  // Before the first trade the open can be zero; fall back to the last price
+  // so the bar is still well formed rather than dropping to a nonsense low.
+  const open = Number.isFinite(raw.open) && (raw.open as number) > 0 ? (raw.open as number) : close;
+  const high = Number.isFinite(raw.high) && (raw.high as number) > 0 ? (raw.high as number) : close;
+  const low = Number.isFinite(raw.low) && (raw.low as number) > 0 ? (raw.low as number) : close;
+  const volume = Number.isFinite(raw.tradeVolume) ? Math.max(0, raw.tradeVolume as number) : 0;
+
+  return {
+    time,
+    open,
+    high: Math.max(high, open, close),
+    low: Math.min(low, open, close),
+    close,
+    volume,
+  };
+}
+
+/**
+ * Fetch today's bar for many symbols at once.
+ *
+ * Symbols that cannot be resolved, or that the quote endpoint does not return,
+ * are simply absent from the map — a missing top-up is never an error, because
+ * the settled history behind it is still perfectly usable.
+ */
+export async function fetchAngelTodayBars(symbols: string[]): Promise<Map<string, Candle>> {
+  const out = new Map<string, Candle>();
+  if (!isConfigured() || symbols.length === 0) return out;
+  if (!isWeekday() || !sessionHasOpened()) return out;
+
+  // Resolve first so the request carries tokens, and keep the reverse mapping
+  // to attribute each result back to the caller's symbol.
+  const byToken = new Map<string, string>();
+  for (const symbol of symbols) {
+    const instrument = await resolveInstrument(symbol);
+    if (instrument) byToken.set(instrument.token, symbol);
+  }
+  if (byToken.size === 0) return out;
+
+  const tokens = [...byToken.keys()];
+  const time = todaySessionOpen();
+
+  for (let i = 0; i < tokens.length; i += QUOTE_BATCH) {
+    const slice = tokens.slice(i, i + QUOTE_BATCH);
+
+    const result = await angelRequest<{ fetched?: RawQuote[] }>(
+      QUOTE_PATH,
+      { mode: "FULL", exchangeTokens: { NSE: slice } },
+      { circuit: "angel-quote" },
+    );
+    if (!result.ok) continue;
+
+    for (const raw of result.data.fetched ?? []) {
+      const symbol = raw.symbolToken ? byToken.get(raw.symbolToken) : undefined;
+      if (!symbol) continue;
+
+      const candle = candleFromQuote(raw, time);
+      if (candle) out.set(symbol, candle);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Append today's bar to a settled series, if it is genuinely missing and
+ * genuinely new.
+ *
+ * The equality check is what makes this safe on a market holiday: the quote
+ * endpoint keeps returning the previous session's numbers when nothing is
+ * trading, so a bar whose OHLCV matches the last settled candle is stale data
+ * wearing today's date, and is discarded.
+ */
+export function withTodayBar(settled: Candle[], today: Candle | undefined): Candle[] {
+  if (!today || settled.length === 0) return settled;
+
+  const last = settled[settled.length - 1];
+  const identical =
+    last.open === today.open &&
+    last.high === today.high &&
+    last.low === today.low &&
+    last.close === today.close &&
+    last.volume === today.volume;
+
+  // Already carrying today's bar: replace it, because during an open session
+  // the price keeps moving and a bar written once would sit frozen.
+  if (last.time === today.time) {
+    return identical ? settled : [...settled.slice(0, -1), today];
+  }
+
+  // Settled history is somehow ahead of the quote; leave it alone.
+  if (last.time > today.time) return settled;
+
+  // Appending a new session. The equality check is what makes this safe on a
+  // market holiday: the quote endpoint keeps returning the previous session's
+  // numbers when nothing is trading, so a bar identical to the last settled
+  // candle is stale data wearing today's date.
+  return identical ? settled : [...settled, today];
 }
 
 // ---------------------------------------------------------------------------
