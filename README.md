@@ -95,6 +95,17 @@ When `status` is `degraded`, read `advice`. Login and the instrument master are 
 
 A failed instrument download is remembered for a minute, and page requests wait at most eight seconds for it before falling back to sample data while it continues in the background. So a slow first load does not stall the app, and once the file lands everything switches to live data without a restart.
 
+### When the last candle is not today's
+
+Open **`/api/diagnose?symbol=RELIANCE.NS`**. It walks the whole path and says which step is at fault:
+
+- `settledFeed.lastDate` — where Angel One's *settled* history actually ends.
+- `quoteEndpoint.keysReturned` — the field names Angel One really sent, verbatim. If a key is spelled differently than the parser expects, it is visible here rather than silently read as `undefined`.
+- `topUp.report` — how many rows came back and how many were matched to a symbol.
+- `verdict` — a sentence naming the cause.
+
+The verdict distinguishes the two cases that matter: **the app failed to merge a bar it had**, versus **the exchange has not published one yet**. The second is not a bug and no amount of redeploying will change it.
+
 ### The stock universe
 
 `nse-universe.ts` carries **3,153 symbols** — every name that traded in the EQ, BE, BZ, SM or ST series across a recent sample of NSE bhavcopy sessions. Rows are ordered by median daily turnover, so index 0 is the most liquid stock on the exchange.

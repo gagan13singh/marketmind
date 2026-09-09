@@ -6,6 +6,7 @@ import {
   angelStatus,
   isWeekday,
   istNow,
+  parseExchangeTime,
   sessionHasOpened,
   todaySessionOpen,
   withTodayBar,
@@ -291,5 +292,34 @@ describe("IST session arithmetic", () => {
     assert.equal(sessionHasOpened(new Date("2026-09-09T03:00:00Z")), false); // 08:30 IST
     assert.equal(sessionHasOpened(new Date("2026-09-09T03:45:00Z")), true); // 09:15 IST
     assert.equal(sessionHasOpened(new Date("2026-09-09T17:30:00Z")), true); // 23:00 IST
+  });
+});
+
+describe("exchange feed timestamps", () => {
+  /**
+   * Dating today's bar from the exchange's own timestamp, rather than the
+   * server clock, is what stops a quote served after hours from being stamped
+   * with the wrong session.
+   */
+  test("parses SmartAPI's DD-Mon-YYYY form", () => {
+    assert.deepEqual(parseExchangeTime("09-Sep-2026 15:30:00"), { year: 2026, month: 9, day: 9 });
+    assert.deepEqual(parseExchangeTime("21-Mar-2024 10:51:22"), { year: 2024, month: 3, day: 21 });
+  });
+
+  test("accepts a single-digit day and any month casing", () => {
+    assert.deepEqual(parseExchangeTime("1-jan-2026 09:15:00"), { year: 2026, month: 1, day: 1 });
+    assert.deepEqual(parseExchangeTime("05-DEC-2025 15:30:00"), { year: 2025, month: 12, day: 5 });
+  });
+
+  test("also accepts an ISO timestamp", () => {
+    assert.deepEqual(parseExchangeTime("2026-09-09T15:30:00+05:30"), { year: 2026, month: 9, day: 9 });
+  });
+
+  test("returns null rather than guessing", () => {
+    assert.equal(parseExchangeTime(undefined), null);
+    assert.equal(parseExchangeTime(""), null);
+    assert.equal(parseExchangeTime("not a date"), null);
+    // An unknown month name must not silently become January.
+    assert.equal(parseExchangeTime("09-Xyz-2026 15:30:00"), null);
   });
 });

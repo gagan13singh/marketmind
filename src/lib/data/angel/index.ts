@@ -257,21 +257,67 @@ export async function fetchAngelHistory(
 // Quotes
 // ---------------------------------------------------------------------------
 
+/**
+ * A quote row as SmartAPI returns it.
+ *
+ * Deliberately loose. Angel One's published examples and its various client
+ * SDKs disagree about several key names — the 52-week range appears as both
+ * `52WeekHigh` and `weekHigh52` depending on where you look — and a key that
+ * does not match is silently `undefined` rather than an error. Reading through
+ * a tolerant accessor means one renamed field degrades one number instead of
+ * dropping the whole row.
+ */
 interface RawQuote {
-  tradingSymbol?: string;
-  symbolToken?: string;
-  ltp?: number;
-  open?: number;
-  high?: number;
-  low?: number;
-  close?: number;
-  lastTradeQty?: number;
-  tradeVolume?: number;
-  netChange?: number;
-  percentChange?: number;
-  avgPrice?: number;
-  weekHigh52?: number;
-  weekLow52?: number;
+  [key: string]: unknown;
+}
+
+/** First finite number found under any of the candidate keys. */
+function pickNumber(raw: RawQuote, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = Number(raw[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+/** First non-empty string found under any of the candidate keys. */
+function pickString(raw: RawQuote, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+    if (typeof value === "number") return String(value);
+  }
+  return undefined;
+}
+
+const MONTHS: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
+/**
+ * Parse the exchange feed timestamp and return the IST civil date it falls on.
+ *
+ * SmartAPI reports this as `"21-Mar-2024 10:51:22"` in IST. Using it rather
+ * than the server clock is what makes the top-up correct: it dates the bar to
+ * the session the exchange actually reported, so a stale quote pulled after
+ * hours is recognised as belonging to an earlier day instead of being stamped
+ * with today's date.
+ */
+export function parseExchangeTime(value: string | undefined): { year: number; month: number; day: number } | null {
+  if (!value) return null;
+
+  const dmy = value.trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})/);
+  if (dmy) {
+    const month = MONTHS[dmy[2].toLowerCase()];
+    if (month === undefined) return null;
+    return { year: Number(dmy[3]), month: month + 1, day: Number(dmy[1]) };
+  }
+
+  const iso = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return { year: Number(iso[1]), month: Number(iso[2]), day: Number(iso[3]) };
+
+  return null;
 }
 
 /**
@@ -303,16 +349,20 @@ export async function fetchAngelQuote(
   if (!result.ok) return null;
 
   const raw = result.data.fetched?.[0];
-  if (!raw || !Number.isFinite(raw.ltp) || (raw.ltp ?? 0) <= 0) return null;
+  if (!raw) return null;
 
-  const price = raw.ltp as number;
-  const previousClose =
-    Number.isFinite(raw.close) && (raw.close ?? 0) > 0
-      ? (raw.close as number)
-      : price;
-  const change = Number.isFinite(raw.netChange)
-    ? (raw.netChange as number)
-    : price - previousClose;
+  const price = pickNumber(raw, "ltp", "lastPrice", "last_traded_price") ?? 0;
+  if (price <= 0) return null;
+
+  const prevRaw = pickNumber(raw, "close", "previousClose", "prevClose");
+  const previousClose = prevRaw && prevRaw > 0 ? prevRaw : price;
+  const change = pickNumber(raw, "netChange", "change") ?? price - previousClose;
+  const dayHigh = pickNumber(raw, "high", "dayHigh");
+  const dayLow = pickNumber(raw, "low", "dayLow");
+  const volume = pickNumber(raw, "tradeVolume", "volume", "totalTradedVolume") ?? 0;
+  const pct = pickNumber(raw, "percentChange", "changePercent");
+  const wkHigh = pickNumber(raw, "52WeekHigh", "weekHigh52", "fiftyTwoWeekHigh");
+  const wkLow = pickNumber(raw, "52WeekLow", "weekLow52", "fiftyTwoWeekLow");
 
   return {
     symbol: symbol.toUpperCase().endsWith(".NS")
@@ -324,28 +374,16 @@ export async function fetchAngelQuote(
     price,
     previousClose,
     change,
-    changePercent: Number.isFinite(raw.percentChange)
-      ? (raw.percentChange as number)
-      : previousClose === 0
-        ? 0
-        : (change / previousClose) * 100,
-    dayHigh: Number.isFinite(raw.high) ? (raw.high as number) : price,
-    dayLow: Number.isFinite(raw.low) ? (raw.low as number) : price,
-    // The 52-week range is required by the type. When SmartAPI omits it, the
-    // day's own range is the honest stand-in rather than a zero that would
-    // make the stock look like it had crashed to nothing.
-    fiftyTwoWeekHigh:
-      Number.isFinite(raw.weekHigh52) && (raw.weekHigh52 as number) > 0
-        ? (raw.weekHigh52 as number)
-        : Math.max(price, Number(raw.high) || price),
-    fiftyTwoWeekLow:
-      Number.isFinite(raw.weekLow52) && (raw.weekLow52 as number) > 0
-        ? (raw.weekLow52 as number)
-        : Math.min(price, Number(raw.low) || price),
-    volume: Number.isFinite(raw.tradeVolume) ? (raw.tradeVolume as number) : 0,
-    averageVolume: Number.isFinite(raw.tradeVolume)
-      ? (raw.tradeVolume as number)
-      : 0,
+    changePercent: pct ?? (previousClose === 0 ? 0 : (change / previousClose) * 100),
+    dayHigh: dayHigh && dayHigh > 0 ? dayHigh : price,
+    dayLow: dayLow && dayLow > 0 ? dayLow : price,
+    // The 52-week range is required by the type. When SmartAPI omits it under
+    // every spelling, the day's own range is the honest stand-in rather than a
+    // zero that would make the stock look like it had crashed to nothing.
+    fiftyTwoWeekHigh: wkHigh && wkHigh > 0 ? wkHigh : Math.max(price, dayHigh ?? price),
+    fiftyTwoWeekLow: wkLow && wkLow > 0 ? wkLow : Math.min(price, dayLow ?? price),
+    volume,
+    averageVolume: volume,
     // SmartAPI is an execution API, not a fundamentals API. These stay null
     // rather than being invented; the fundamentals page sources them elsewhere.
     marketCap: null,
@@ -415,15 +453,18 @@ export function sessionHasOpened(at: Date = new Date()): boolean {
 }
 
 function candleFromQuote(raw: RawQuote, time: number): Candle | null {
-  const close = Number(raw.ltp);
-  if (!Number.isFinite(close) || close <= 0) return null;
+  const close = pickNumber(raw, "ltp", "lastPrice", "last_traded_price") ?? 0;
+  if (close <= 0) return null;
 
   // Before the first trade the open can be zero; fall back to the last price
   // so the bar is still well formed rather than dropping to a nonsense low.
-  const open = Number.isFinite(raw.open) && (raw.open as number) > 0 ? (raw.open as number) : close;
-  const high = Number.isFinite(raw.high) && (raw.high as number) > 0 ? (raw.high as number) : close;
-  const low = Number.isFinite(raw.low) && (raw.low as number) > 0 ? (raw.low as number) : close;
-  const volume = Number.isFinite(raw.tradeVolume) ? Math.max(0, raw.tradeVolume as number) : 0;
+  const rawOpen = pickNumber(raw, "open", "openPrice") ?? 0;
+  const rawHigh = pickNumber(raw, "high", "dayHigh") ?? 0;
+  const rawLow = pickNumber(raw, "low", "dayLow") ?? 0;
+
+  const open = rawOpen > 0 ? rawOpen : close;
+  const high = rawHigh > 0 ? rawHigh : close;
+  const low = rawLow > 0 ? rawLow : close;
 
   return {
     time,
@@ -431,33 +472,71 @@ function candleFromQuote(raw: RawQuote, time: number): Candle | null {
     high: Math.max(high, open, close),
     low: Math.min(low, open, close),
     close,
-    volume,
+    volume: Math.max(0, pickNumber(raw, "tradeVolume", "volume", "totalTradedVolume") ?? 0),
   };
 }
 
-/**
- * Fetch today's bar for many symbols at once.
- *
- * Symbols that cannot be resolved, or that the quote endpoint does not return,
- * are simply absent from the map — a missing top-up is never an error, because
- * the settled history behind it is still perfectly usable.
- */
-export async function fetchAngelTodayBars(symbols: string[]): Promise<Map<string, Candle>> {
-  const out = new Map<string, Candle>();
-  if (!isConfigured() || symbols.length === 0) return out;
-  if (!isWeekday() || !sessionHasOpened()) return out;
+/** Why a symbol did or did not receive a fresh bar. Surfaced by /api/diagnose. */
+export interface TodayBarReport {
+  requested: number;
+  resolved: number;
+  returned: number;
+  matched: number;
+  skippedReason?: string;
+  /** The exchange feed timestamps seen, so a stale feed is visible. */
+  feedTimes: string[];
+}
 
-  // Resolve first so the request carries tokens, and keep the reverse mapping
-  // to attribute each result back to the caller's symbol.
+/**
+ * Fetch the latest session's bar for many symbols at once.
+ *
+ * Matching is deliberately defensive. The response is attributed back to the
+ * caller's symbol by instrument token, then by trading symbol, then — for a
+ * single-instrument request — by position. Relying on one key alone means a
+ * field named differently than expected silently drops every row, and the only
+ * visible symptom is a chart quietly stuck on yesterday.
+ */
+export async function fetchAngelTodayBars(
+  symbols: string[],
+  report?: { value: TodayBarReport },
+): Promise<Map<string, Candle>> {
+  const out = new Map<string, Candle>();
+  const stats: TodayBarReport = {
+    requested: symbols.length,
+    resolved: 0,
+    returned: 0,
+    matched: 0,
+    feedTimes: [],
+  };
+  if (report) report.value = stats;
+
+  if (!isConfigured() || symbols.length === 0) {
+    stats.skippedReason = "Angel One is not configured.";
+    return out;
+  }
+
+  // No weekday or clock gate here on purpose. An earlier version refused to
+  // even ask outside session hours, which meant a quote that would have
+  // supplied the missing bar was never requested. The exchange timestamp on
+  // the response decides which session the data belongs to, so asking is
+  // always safe and the answer carries its own date.
+
   const byToken = new Map<string, string>();
+  const byTradingSymbol = new Map<string, string>();
   for (const symbol of symbols) {
     const instrument = await resolveInstrument(symbol);
-    if (instrument) byToken.set(instrument.token, symbol);
+    if (!instrument) continue;
+    byToken.set(instrument.token, symbol);
+    byTradingSymbol.set(instrument.tradingSymbol.toUpperCase(), symbol);
   }
-  if (byToken.size === 0) return out;
+  stats.resolved = byToken.size;
+
+  if (byToken.size === 0) {
+    stats.skippedReason = "No symbol could be resolved to an instrument token.";
+    return out;
+  }
 
   const tokens = [...byToken.keys()];
-  const time = todaySessionOpen();
 
   for (let i = 0; i < tokens.length; i += QUOTE_BATCH) {
     const slice = tokens.slice(i, i + QUOTE_BATCH);
@@ -467,15 +546,52 @@ export async function fetchAngelTodayBars(symbols: string[]): Promise<Map<string
       { mode: "FULL", exchangeTokens: { NSE: slice } },
       { circuit: "angel-quote" },
     );
-    if (!result.ok) continue;
+    if (!result.ok) {
+      stats.skippedReason = `Quote request failed: ${result.message}`;
+      continue;
+    }
 
-    for (const raw of result.data.fetched ?? []) {
-      const symbol = raw.symbolToken ? byToken.get(raw.symbolToken) : undefined;
+    const rows = result.data.fetched ?? [];
+    stats.returned += rows.length;
+
+    for (let r = 0; r < rows.length; r += 1) {
+      const raw = rows[r];
+
+      const token = pickString(raw, "symbolToken", "symboltoken", "token");
+      const trading = pickString(raw, "tradingSymbol", "tradingsymbol", "symbol");
+
+      const symbol =
+        (token ? byToken.get(token) : undefined) ??
+        (trading ? byTradingSymbol.get(trading.toUpperCase()) : undefined) ??
+        // Single-instrument request: position is unambiguous.
+        (slice.length === 1 && rows.length === 1 ? byToken.get(slice[0]) : undefined);
+
       if (!symbol) continue;
 
+      // Date the bar from the exchange's own timestamp where available, so a
+      // quote served after hours is attributed to the session it belongs to
+      // rather than to whatever day the server thinks it is.
+      const feedTime = pickString(raw, "exchFeedTime", "exchTradeTime", "feedTime");
+      if (feedTime && stats.feedTimes.length < 3) stats.feedTimes.push(feedTime);
+
+      const parts = parseExchangeTime(feedTime);
+      const time = parts
+        ? Date.UTC(parts.year, parts.month - 1, parts.day, 3, 45, 0)
+        : todaySessionOpen();
+
       const candle = candleFromQuote(raw, time);
-      if (candle) out.set(symbol, candle);
+      if (candle) {
+        out.set(symbol, candle);
+        stats.matched += 1;
+      }
     }
+  }
+
+  if (out.size === 0 && !stats.skippedReason) {
+    stats.skippedReason =
+      stats.returned === 0
+        ? "The quote endpoint returned no rows."
+        : "Rows came back but none could be matched to a requested symbol.";
   }
 
   return out;
@@ -520,6 +636,36 @@ export function withTodayBar(settled: Candle[], today: Candle | undefined): Cand
 // ---------------------------------------------------------------------------
 // Diagnostics
 // ---------------------------------------------------------------------------
+
+/**
+ * The quote response for one symbol, unparsed.
+ *
+ * Returned verbatim so /api/diagnose can show exactly which keys Angel One
+ * sent. Every other reader goes through the tolerant accessors, which means a
+ * renamed field reads as `undefined` — correct behaviour, but it hides the one
+ * fact needed to diagnose the problem.
+ */
+export async function angelRawQuote(
+  symbol: string,
+): Promise<{ ok: boolean; message: string; row?: Record<string, unknown> }> {
+  if (!isConfigured()) return { ok: false, message: "Angel One is not configured." };
+
+  const instrument = await resolveInstrument(symbol);
+  if (!instrument) return { ok: false, message: `Could not resolve ${symbol} to an instrument token.` };
+
+  const result = await angelRequest<{ fetched?: Record<string, unknown>[]; unfetched?: unknown[] }>(
+    QUOTE_PATH,
+    { mode: "FULL", exchangeTokens: { NSE: [instrument.token] } },
+    { circuit: "angel-quote" },
+  );
+
+  if (!result.ok) return { ok: false, message: result.message };
+
+  const row = result.data.fetched?.[0];
+  return row
+    ? { ok: true, message: "Quote returned.", row }
+    : { ok: false, message: "Quote succeeded but returned no rows for this token." };
+}
 
 export interface AngelStatus {
   configured: boolean;
