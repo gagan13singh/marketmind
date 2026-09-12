@@ -330,6 +330,26 @@ export function isInstrumentLoadPending(): boolean {
 }
 
 /**
+ * Start the download at module load rather than on the first lookup.
+ *
+ * A serverless instance is created a little before it serves its first
+ * request, and the instrument master is needed by essentially every request.
+ * Starting it here means the download overlaps with module evaluation and
+ * routing instead of running after them, which is free latency.
+ *
+ * Deliberately fire-and-forget. A failure here is recorded by `load()` and
+ * reported through `/api/health`; throwing would take the whole module down
+ * over a file the app is designed to run without.
+ */
+function warmInstruments(): void {
+  if (process.env.MARKETMIND_FORCE_SAMPLE === "true") return;
+  if (!process.env.ANGEL_API_KEY?.trim()) return;
+  void getInstruments().catch(() => undefined);
+}
+
+warmInstruments();
+
+/**
  * Resolve an application symbol to an Angel One instrument.
  *
  * Accepts `RELIANCE`, `RELIANCE.NS`, `RELIANCE-EQ` and index symbols such as
@@ -338,12 +358,24 @@ export function isInstrumentLoadPending(): boolean {
 /**
  * How long an ordinary request will wait for the instrument master.
  *
- * Page loads must not sit behind a multi-megabyte download. If it is not ready
- * within this window the request falls back to sample data immediately while
- * the download continues in the background, so the very next request finds it
- * cached and the app heals itself without anyone intervening.
+ * This used to be eight seconds, which is the single biggest reason a cold
+ * page load felt broken: every first request to a new serverless instance sat
+ * behind a multi-megabyte download before it rendered anything. Nothing about
+ * waiting longer makes the download arrive sooner — it only moves the cost
+ * onto the person watching a blank screen.
+ *
+ * A short window is enough to catch the case where the file is nearly ready.
+ * Past that the request falls back immediately while the download continues in
+ * the background, so the next request finds it cached and the app heals itself.
  */
-const REQUEST_WAIT_MS = 8_000;
+const REQUEST_WAIT_MS = (() => {
+  // 3.5s, not the old 8s. The pages that matter now stream their shell before
+  // this is consulted, so the wait is hidden rather than stared at — and when
+  // it does expire, the fallback is cached for seconds rather than minutes so
+  // the next request picks up live data the moment the download lands.
+  const raw = Number(process.env.ANGEL_INSTRUMENT_REQUEST_WAIT_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 3_500;
+})();
 
 export async function resolveInstrument(symbol: string): Promise<Instrument | null> {
   const raw = symbol.trim().toUpperCase();

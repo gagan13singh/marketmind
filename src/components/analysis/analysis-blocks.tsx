@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
-import type { SignalGroup, TechnicalAnalysis, TradePlan, Verdict } from "@/types";
+import type { NarrativePoint, SignalGroup, TechnicalAnalysis, TradePlan, Verdict } from "@/types";
 import { VERDICT_META } from "@/types";
 import { cn } from "@/lib/utils/cn";
 import { formatPrice, formatPercent } from "@/lib/utils/format";
@@ -138,70 +138,126 @@ export function SignalGroupCard({ group, defaultOpen = false }: { group: SignalG
   );
 }
 
-/** Entry, stop, targets and position size — the actionable part. */
+/**
+ * Entry, stop, targets and position size.
+ *
+ * Two states, and the difference matters more than anything else on the card.
+ * `actionable` means the levels describe a trade that can be taken now.
+ * `wait` means the nearest resistance caps the upside below what the stop
+ * risks, so the levels describe a trade that becomes valid at a price the
+ * stock has not reached — and the card says so plainly instead of printing a
+ * ratio below 1:1 and leaving the reader to notice.
+ */
 export function TradePlanCard({ plan, price }: { plan: TradePlan; price: number }) {
+  const waiting = plan.status === "wait";
+
   return (
     <div className="surface p-5">
-      <div className="flex items-baseline justify-between gap-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h3 className="text-xl">Mechanical plan</h3>
         <span className="label">Expected hold: {plan.expectedHold}</span>
       </div>
-      <p className="mt-1.5 text-sm text-[var(--color-paper-dim)]">
-        Derived from a {plan.atrPercent.toFixed(2)}% average true range. Levels move with volatility rather than being
-        fixed percentages.
-      </p>
+
+      {waiting ? (
+        <span className="chip chip-flat mt-3 inline-block">Wait for entry — not actionable at {formatPrice(price)}</span>
+      ) : (
+        <p className="mt-1.5 text-sm text-[var(--color-paper-dim)]">
+          Derived from a {plan.atrPercent.toFixed(2)}% average true range. Levels move with volatility rather than
+          being fixed percentages.
+        </p>
+      )}
+
+      {waiting && plan.wait && (
+        <div className="mt-4 rounded-lg border border-[color-mix(in_oklab,var(--color-bear-500)_35%,transparent)] bg-[var(--color-ink-950)] p-4">
+          <p className="text-sm leading-relaxed text-[var(--color-paper-dim)]">{plan.wait.reason}</p>
+          <ol className="mt-3 space-y-2.5">
+            {plan.wait.steps.map((step, i) => (
+              <li key={i} className="flex gap-3 text-sm leading-relaxed text-[var(--color-paper-dim)]">
+                <span className="metric shrink-0 text-xs text-[var(--color-paper-faint)]">{i + 1}</span>
+                <span>{step}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
 
       <div className="mt-5 grid gap-4 sm:grid-cols-3">
         <PlanCell
-          label="Entry band"
+          label={waiting ? "Planned entry" : "Entry band"}
           value={`${formatPrice(plan.entryLow)} – ${formatPrice(plan.entryHigh)}`}
-          note="Around current price, not a chase"
+          note={
+            waiting
+              ? `${(((price - plan.entryLow) / price) * 100).toFixed(1)}% below today — a limit, not a market order`
+              : "Around current price, not a chase"
+          }
         />
         <PlanCell
           label="Stop loss"
           value={formatPrice(plan.stopLoss)}
-          note={`${plan.stopPercent.toFixed(1)}% below entry`}
+          note={`${plan.stopPercent.toFixed(1)}% away · ${plan.stopBasis}`}
           tone="bear"
         />
         <PlanCell
           label="Risk / reward"
           value={`1 : ${plan.riskRewardRatio.toFixed(1)}`}
-          note="To the first target"
+          note={waiting ? "At the planned entry, not today's price" : "To the first target"}
           tone="accent"
         />
       </div>
 
-      <div className="mt-5">
-        <div className="label mb-2">Targets</div>
-        <div className="space-y-2">
-          {plan.targets.map((t) => (
-            <div
-              key={t.label}
-              className="flex items-center justify-between gap-4 rounded-lg border border-[var(--color-ink-700)] px-3.5 py-2.5"
-            >
-              <span className="text-sm text-[var(--color-paper-dim)]">{t.label}</span>
-              <div className="flex items-baseline gap-4">
-                <span className="metric text-sm bull">{formatPrice(t.price)}</span>
-                <span className="metric w-14 text-right text-xs text-[var(--color-paper-faint)]">
-                  {t.rMultiple.toFixed(1)}R
-                </span>
-                <span className="metric w-16 text-right text-xs bull">{formatPercent(t.gainPercent, 1)}</span>
+      {plan.targets.length > 0 ? (
+        <div className="mt-5">
+          <div className="label mb-2">
+            Targets{waiting ? " — from the planned entry" : ""}
+            {plan.totalUpsidePercent > 0 && (
+              <span className="ml-2 text-[var(--color-paper-faint)]">
+                full ladder {formatPercent(plan.totalUpsidePercent, 0)}
+              </span>
+            )}
+          </div>
+          <div className="space-y-2">
+            {plan.targets.map((t) => (
+              <div key={t.label} className="rounded-lg border border-[var(--color-ink-700)] px-3.5 py-2.5">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="text-sm text-[var(--color-paper-dim)]">{t.label}</span>
+                  <div className="flex items-baseline gap-4">
+                    <span className="metric text-sm bull">{formatPrice(t.price)}</span>
+                    <span className="metric w-14 text-right text-xs text-[var(--color-paper-faint)]">
+                      {t.rMultiple.toFixed(1)}R
+                    </span>
+                    <span className="metric w-16 text-right text-xs bull">{formatPercent(t.gainPercent, 1)}</span>
+                  </div>
+                </div>
+                {t.basis && <p className="mt-1 text-xs text-[var(--color-paper-faint)]">{t.basis}</p>}
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
-
-      <div className="mt-5 rounded-lg border border-[var(--color-ink-700)] bg-[var(--color-ink-950)] p-4">
-        <div className="label">Position sizing example</div>
-        <p className="mt-2 text-sm leading-relaxed text-[var(--color-paper-dim)]">
-          On a {formatPrice(plan.positionSizeExample.accountSize)} account risking{" "}
-          {plan.positionSizeExample.riskPercent}% per trade, the stop distance above implies{" "}
-          <span className="metric text-[var(--color-paper)]">{plan.positionSizeExample.shares} shares</span> —{" "}
-          {formatPrice(plan.positionSizeExample.capitalRequired)} of capital. Size falls automatically as volatility
-          rises, which is what keeps risk constant across different stocks.
+      ) : (
+        <p className="mt-5 text-sm leading-relaxed text-[var(--color-paper-dim)]">
+          No target ladder is published here. Every level that would clear the risk sits above resistance that has not
+          broken, so any ladder drawn from today&rsquo;s price would be a projection through a wall rather than a plan.
         </p>
-      </div>
+      )}
+
+      {plan.rewardNote && (
+        <p className="mt-4 rounded-lg border border-[var(--color-ink-700)] p-3.5 text-sm leading-relaxed text-[var(--color-paper-dim)]">
+          {plan.rewardNote}
+        </p>
+      )}
+
+      {plan.positionSizeExample.shares > 0 && (
+        <div className="mt-5 rounded-lg border border-[var(--color-ink-700)] bg-[var(--color-ink-950)] p-4">
+          <div className="label">Position sizing example</div>
+          <p className="mt-2 text-sm leading-relaxed text-[var(--color-paper-dim)]">
+            On a {formatPrice(plan.positionSizeExample.accountSize)} account risking{" "}
+            {plan.positionSizeExample.riskPercent}% per trade, {waiting ? "the planned" : "the"} stop distance implies{" "}
+            <span className="metric text-[var(--color-paper)]">{plan.positionSizeExample.shares} shares</span> —{" "}
+            {formatPrice(plan.positionSizeExample.capitalRequired)} of capital. Size falls automatically as volatility
+            rises, which is what keeps risk constant across different stocks.
+          </p>
+        </div>
+      )}
 
       <p className="mt-4 text-xs text-[var(--color-paper-faint)]">
         Current price {formatPrice(price)}. These levels are generated from price data alone and take no account of
@@ -232,13 +288,23 @@ function PlanCell({
   );
 }
 
-/** Narrative, key points and risks. */
+/**
+ * Narrative, key points and risks.
+ *
+ * When `points` is supplied the summary renders as labelled rows rather than a
+ * paragraph. The paragraph form ran to about 900 characters of unbroken prose,
+ * which is more than anyone reads on a page they are scanning for a price, so
+ * the label column is the important part: a reader who only wants the trade
+ * plan can find it without reading the trend read first.
+ */
 export function NarrativeBlock({
   narrative,
+  points,
   keyPoints,
   risks,
 }: {
   narrative: string;
+  points?: NarrativePoint[];
   keyPoints: string[];
   risks: string[];
 }) {
@@ -246,7 +312,32 @@ export function NarrativeBlock({
     <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
       <div className="surface p-6">
         <h3 className="text-xl">What this adds up to</h3>
-        <p className="narrative mt-4">{narrative}</p>
+
+        {points && points.length > 0 ? (
+          <ul className="mt-5 space-y-4">
+            {points.map((point) => (
+              <li key={point.label} className="grid gap-x-4 gap-y-1 sm:grid-cols-[8.5rem_1fr]">
+                <div className="flex items-baseline gap-2">
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "mt-1.5 size-1.5 shrink-0 rounded-full",
+                      point.tone === "bullish"
+                        ? "bg-[var(--color-bull-500)]"
+                        : point.tone === "bearish"
+                          ? "bg-[var(--color-bear-500)]"
+                          : "bg-[var(--color-flat-500)]",
+                    )}
+                  />
+                  <span className="text-sm text-[var(--color-paper)]">{point.label}</span>
+                </div>
+                <p className="max-w-[62ch] text-sm leading-relaxed text-[var(--color-paper-dim)]">{point.text}</p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="narrative mt-4">{narrative}</p>
+        )}
       </div>
 
       <div className="space-y-5">

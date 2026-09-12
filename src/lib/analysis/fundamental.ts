@@ -1,6 +1,7 @@
 import type {
   FundamentalAnalysis,
   FundamentalSnapshot,
+  NarrativePoint,
   SignalDirection,
   SignalGroup,
   SignalReading,
@@ -788,6 +789,57 @@ export function analyzeFundamental(f: FundamentalSnapshot): FundamentalAnalysis 
     if (top) parts.push(top.conclusion);
   }
 
+  /**
+   * The same summary as labelled points.
+   *
+   * The prose version joins eight sentences into one block, which nobody
+   * finishes on a page they are scanning for a number. Each point below
+   * answers exactly one question and the label column is what a reader jumps
+   * between — someone who only wants the cash-flow read can find it without
+   * reading the growth read first. The prose form is kept for the API and for
+   * the summary card on the overview page, where a single string is wanted.
+   */
+  const narrativePoints: NarrativePoint[] = [];
+
+  narrativePoints.push({
+    label: "The call",
+    text: `${openers[verdict]} Score ${compositeScore > 0 ? "+" : ""}${compositeScore.toFixed(0)} out of 100 at ${confidence}% confidence, from ${totalReadings} metrics. Business quality reads ${qualityTier}.`,
+    tone: compositeScore >= 20 ? "bullish" : compositeScore <= -20 ? "bearish" : "neutral",
+  });
+
+  for (const key of GROUP_ORDER) {
+    const g = byKey.get(key);
+    if (!g) continue;
+    const top = topReading(g);
+    narrativePoints.push({
+      label: POINT_LABELS[key] ?? g.label,
+      text: top ? `${top.label} at ${top.display}. ${firstSentence(top.conclusion)}` : g.summary,
+      tone: g.score >= 20 ? "bullish" : g.score <= -20 ? "bearish" : "neutral",
+    });
+  }
+
+  /**
+   * Name what is absent rather than letting it pass as a low score.
+   *
+   * This matters more than it looks. When statements are missing, the affected
+   * groups score from very few metrics, and a reader seeing "Balance sheet:
+   * +12" has no way to tell whether that is a considered judgement or an
+   * average of one number. Saying so is the difference between a confidence
+   * figure that is informative and one that is decorative.
+   */
+  const gaps: string[] = [];
+  if (f.balanceSheet.length === 0) gaps.push("balance sheet");
+  if (f.cashFlow.length === 0) gaps.push("cash flow");
+  if (f.annual.length < 3) gaps.push("multi-year history");
+
+  if (gaps.length > 0) {
+    narrativePoints.push({
+      label: "Data gaps",
+      text: `No ${joinList(gaps)} data was available for this company, so those areas are scored from very few metrics and the confidence figure above already reflects that. Missing numbers are dropped, never estimated — an invented balance sheet would score well and mean nothing.`,
+      tone: "neutral",
+    });
+  }
+
   const keyPoints = groups.map((g) => {
     const top = [...g.readings].sort((a, b) => Math.abs(b.score) - Math.abs(a.score))[0];
     return `${g.label}: ${top ? `${top.label} at ${top.display}` : g.summary} — scores ${g.score.toFixed(0)}/100.`;
@@ -825,9 +877,70 @@ export function analyzeFundamental(f: FundamentalSnapshot): FundamentalAnalysis 
     confidence,
     groups,
     narrative: parts.join(" "),
+    narrativePoints,
     keyPoints,
     risks,
     qualityTier,
     narrativeSource: "engine",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Narrative helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Reading order for the summary.
+ *
+ * Deliberately not the weighting order. A reader works outward from what the
+ * business does — grows, earns, survives, converts to cash — before arriving
+ * at what it costs, so valuation comes late even though it is scored earlier.
+ */
+const GROUP_ORDER = [
+  "growth",
+  "profitability",
+  "balance-sheet",
+  "cash-flow",
+  "valuation",
+  "shareholding",
+] as const;
+
+/** Short headings for the point labels. Group labels are too long to scan. */
+const POINT_LABELS: Record<string, string> = {
+  growth: "Growth",
+  profitability: "Profitability",
+  "balance-sheet": "Balance sheet",
+  "cash-flow": "Cash flow",
+  valuation: "Valuation",
+  shareholding: "Shareholding",
+};
+
+/**
+ * The most significant reading in a group.
+ *
+ * Significance is absolute score, not sign: a badly negative reading inside an
+ * otherwise positive group is the thing a reader most needs to see.
+ */
+function topReading(group: SignalGroup): SignalReading | undefined {
+  return [...group.readings].sort((a, b) => Math.abs(b.score) - Math.abs(a.score))[0];
+}
+
+/**
+ * Trim a conclusion to its first sentence.
+ *
+ * Readings are written at length for the expandable detail cards, where the
+ * reader has asked for depth. In a summary they have not. Decimals are
+ * protected so "1.5x cover" does not split mid-number.
+ */
+function firstSentence(value: string): string {
+  if (!value) return "";
+  const match = value.match(/^.*?[.!?](?=\s+[A-Z(]|$)/s);
+  const first = (match?.[0] ?? value).trim();
+  return first.length > 0 ? first : value.trim();
+}
+
+/** "a, b and c" — used in prose, so an Oxford-comma-free join is correct. */
+function joinList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }

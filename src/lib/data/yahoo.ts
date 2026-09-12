@@ -1,4 +1,5 @@
 import "server-only";
+import { buildCookieJar } from "./cookie-jar";
 import {
   attemptsFor,
   isCircuitOpen,
@@ -23,7 +24,25 @@ import {
 
 const BASE = "https://query1.finance.yahoo.com";
 const BASE_ALT = "https://query2.finance.yahoo.com";
-const TIMEOUT_MS = 9_000;
+/**
+ * Yahoo is a best-effort fundamentals fallback, never a blocking dependency.
+ *
+ * The old nine-second timeout, multiplied by three attempts across two hosts
+ * plus two session-establishment calls, gave a worst case near forty seconds —
+ * all of it in front of a page render. `quoteSummary` also answers 401 or 429
+ * to most datacenter IPs, which is exactly what a Vercel function is, so that
+ * worst case was the common case in production rather than the rare one.
+ *
+ * Four seconds is long enough for a host that is going to answer and short
+ * enough that a host that is not costs almost nothing.
+ */
+const TIMEOUT_MS = 4_000;
+
+/**
+ * Total wall-clock budget for one fundamentals lookup, across every attempt
+ * and both hosts. Whatever is unfinished when this expires is abandoned.
+ */
+const TOTAL_BUDGET_MS = 6_500;
 
 const HEADERS: Record<string, string> = {
   "User-Agent":
@@ -60,15 +79,12 @@ async function establishSession(): Promise<Session | null> {
       signal: AbortSignal.timeout(TIMEOUT_MS),
     }).catch(() => null);
 
-    const raw =
-      seed?.headers.getSetCookie?.().join("; ") ?? seed?.headers.get("set-cookie") ?? "";
-    // Keep only name=value pairs; drop Path/Expires/HttpOnly attributes.
-    const cookie = raw
-      .split(/,(?=[^;]+?=)/)
-      .map((c) => c.split(";")[0].trim())
-      .filter((c) => c.includes("=") && !/^(path|expires|domain|max-age|secure|httponly|samesite)=/i.test(c))
-      .join("; ");
-
+    // This previously kept only the first of the cookies Yahoo sets, because
+    // it joined them all into one string before splitting. `getcrumb` then
+    // answered 401, the crumb never arrived, and the fundamentals page fell
+    // through to sample data — a failure that reads as an IP block and is not
+    // one. Worth checking here first whenever fundamentals go quiet.
+    const cookie = seed ? buildCookieJar(seed.headers) : "";
     if (!cookie) return null;
 
     const crumbRes = await fetch(`${BASE_ALT}/v1/test/getcrumb`, {
@@ -230,7 +246,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  */
 async function getJson<T>(
   url: string,
-  opts: { withSession?: boolean; provider?: ProviderName } = {},
+  opts: { withSession?: boolean; provider?: ProviderName; deadline?: number } = {},
 ): Promise<{ data: T } | { error: FetchFailure }> {
   const provider = opts.provider;
 
@@ -238,10 +254,17 @@ async function getJson<T>(
   // budget finding out again. Bulk scans depend on this returning instantly.
   if (provider && isCircuitOpen(provider)) return { error: "throttled" };
 
-  const attempts = provider ? attemptsFor(provider) : 3;
+  // Two attempts, not three. A third attempt against a host that has already
+  // refused twice has never recovered the request; it only spends the budget.
+  const attempts = Math.min(provider ? attemptsFor(provider) : 2, 2);
+  const deadline = opts.deadline ?? Date.now() + TOTAL_BUDGET_MS;
   let last: FetchFailure = "network";
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (Date.now() >= deadline) {
+      if (provider) recordFailure(provider);
+      return { error: last };
+    }
     let target = url;
     const headers: Record<string, string> = { ...HEADERS };
 
@@ -256,9 +279,11 @@ async function getJson<T>(
     try {
       const res = await fetch(target, {
         headers,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-        // Swing and positional analysis does not need data live to the second.
-        next: { revalidate: 300 },
+        signal: AbortSignal.timeout(Math.max(500, Math.min(TIMEOUT_MS, deadline - Date.now()))),
+        // Swing and positional analysis does not need data live to the second,
+        // and an hour of caching is what keeps a flaky upstream from being hit
+        // once per page view.
+        next: { revalidate: 3_600 },
       });
 
       if (res.status === 429 || res.status === 503) {
@@ -344,14 +369,25 @@ export async function fetchQuoteSummary(
 ): Promise<YahooQuoteSummary | null> {
   const mods = modules.join("%2C");
   const path = `/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${mods}`;
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
 
   // quoteSummary is the endpoint that hard-requires a cookie + crumb.
   let json = unwrap(
-    await getJson<YQuoteSummaryResponse>(`${BASE_ALT}${path}`, { withSession: true, provider: "yahoo-summary" }),
+    await getJson<YQuoteSummaryResponse>(`${BASE_ALT}${path}`, {
+      withSession: true,
+      provider: "yahoo-summary",
+      deadline,
+    }),
   );
-  if (!json?.quoteSummary?.result?.length) {
+
+  // Only try the second host if there is budget left for it to matter.
+  if (!json?.quoteSummary?.result?.length && Date.now() < deadline) {
     json = unwrap(
-      await getJson<YQuoteSummaryResponse>(`${BASE}${path}`, { withSession: true, provider: "yahoo-summary" }),
+      await getJson<YQuoteSummaryResponse>(`${BASE}${path}`, {
+        withSession: true,
+        provider: "yahoo-summary",
+        deadline,
+      }),
     );
   }
   return json?.quoteSummary?.result?.[0] ?? null;

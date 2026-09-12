@@ -69,7 +69,12 @@ export default async function FundamentalPage({ params }: { params: Promise<{ sy
           </dl>
         </section>
 
-        <NarrativeBlock narrative={analysis.narrative} keyPoints={analysis.keyPoints} risks={analysis.risks} />
+        <NarrativeBlock
+          narrative={analysis.narrative}
+          points={analysis.narrativePoints}
+          keyPoints={analysis.keyPoints}
+          risks={analysis.risks}
+        />
 
         <section>
           <h2 className="text-2xl">The financials</h2>

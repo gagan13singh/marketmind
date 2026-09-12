@@ -1,7 +1,8 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import type { Metadata } from "next";
 import { ArrowRight, Filter, Activity } from "lucide-react";
-import { getHistoryBatch } from "@/lib/data/service";
+import { getHistoryBatchBudgeted } from "@/lib/data/service";
 import { analyzeTechnical } from "@/lib/analysis/technical";
 import { UNIVERSE_SIZE, displaySymbol, BENCHMARK, screenerUniverse } from "@/lib/data/universe";
 import { getHistory } from "@/lib/data/service";
@@ -38,6 +39,25 @@ export const dynamic = "force-dynamic";
  */
 const DASHBOARD_SLICE = screenerUniverse("liquid").slice(0, 40);
 
+/**
+ * Wall-clock budget for the scan behind this page.
+ *
+ * Angel One paces history requests at three per second, so forty cold symbols
+ * take thirteen seconds at the absolute floor — before login, before the
+ * instrument master, before any network latency at all. That is why this page
+ * used to take the better part of a minute: it awaited all forty before
+ * sending a single byte.
+ *
+ * Two changes fix it. The scan now spends a budget and ranks whatever it got,
+ * and it renders inside a Suspense boundary so the shell streams immediately
+ * and the table arrives when it is ready. A warm cache costs nothing, so the
+ * budget only ever binds on the first request after a restart.
+ */
+const SCAN_BUDGET_MS = (() => {
+  const raw = Number(process.env.MARKETMIND_DASHBOARD_BUDGET_MS);
+  return Number.isFinite(raw) && raw >= 1_000 ? raw : 6_000;
+})();
+
 interface Ranked {
   symbol: string;
   name: string;
@@ -50,17 +70,95 @@ interface Ranked {
   regime: string;
 }
 
-export default async function DashboardPage() {
-  const [histories, benchmark] = await Promise.all([
-    getHistoryBatch(
+/**
+ * The page shell. Renders and streams immediately; the scan arrives after.
+ *
+ * Everything that needs the network now lives inside the Suspense boundary
+ * below, so the nav, the search box and the jump-off cards are interactive
+ * while the scan is still running. That is the difference between a page that
+ * takes nine seconds and a page that feels like it takes none.
+ */
+export default function DashboardPage() {
+  return (
+    <>
+      <AppNav />
+
+      <main className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6">
+        <header className="mb-8 max-w-2xl">
+          <h1 className="text-3xl sm:text-4xl">Dashboard</h1>
+          <p className="mt-3 text-[var(--color-paper-dim)]">
+            A swing-horizon read on the most liquid NSE names, scored on daily candles.
+          </p>
+        </header>
+
+        <div className="mb-8 max-w-2xl lg:hidden">
+          <SymbolSearch />
+        </div>
+
+        <Suspense fallback={<ScanSkeleton />}>
+          <ScanSections />
+        </Suspense>
+
+        {/* --- Next actions ----------------------------------------------- */}
+        <div className="mt-6 grid gap-4 sm:grid-cols-2">
+          <Link href="/screener" className="surface p-5">
+            <Filter size={20} className="text-[var(--color-signal-500)]" />
+            <h3 className="mt-3 text-lg">Screen the full universe</h3>
+            <p className="mt-1.5 text-sm text-[var(--color-paper-dim)]">
+              This dashboard reads the 40 most liquid names. The screener works across the{" "}
+              {UNIVERSE_SIZE.toLocaleString("en-IN")}-name NSE universe, with filters you define.
+            </p>
+          </Link>
+          <Link href="/backtest" className="surface p-5">
+            <Activity size={20} className="text-[var(--color-signal-500)]" />
+            <h3 className="mt-3 text-lg">Test a strategy before trusting it</h3>
+            <p className="mt-1.5 text-sm text-[var(--color-paper-dim)]">
+              Find out whether the approach you are considering has actually worked on the stock you are considering it
+              for.
+            </p>
+          </Link>
+        </div>
+
+        <Disclaimer className="mt-10 max-w-3xl" />
+      </main>
+
+      <AppFooter />
+    </>
+  );
+}
+
+/** Shown while the scan runs. Shaped like the real thing to avoid a jump. */
+function ScanSkeleton() {
+  return (
+    <div aria-busy="true" aria-live="polite">
+      <section className="surface mb-6 p-5">
+        <h2 className="text-lg">Market breadth</h2>
+        <p className="label mt-0.5">Scoring the most liquid NSE names — this takes a few seconds on a cold start</p>
+        <div className="mt-4 h-2.5 w-full max-w-lg overflow-hidden rounded-full bg-[var(--color-ink-800)]">
+          <div className="h-full w-1/3 animate-pulse bg-[var(--color-ink-600)]" />
+        </div>
+      </section>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {Array.from({ length: 8 }, (_, i) => (
+          <div key={i} className="surface h-[152px] animate-pulse p-4" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The part that needs the network. Streamed in once the scan settles. */
+async function ScanSections() {
+  const [outcome, benchmark] = await Promise.all([
+    getHistoryBatchBudgeted(
       DASHBOARD_SLICE.map((u) => u.symbol),
-      "daily",
-      "2y",
-      10,
+      { timeframe: "daily", range: "2y", concurrency: 4, budgetMs: SCAN_BUDGET_MS },
     ),
     getHistory(BENCHMARK.symbol, "daily", "1y"),
   ]);
 
+  const histories = outcome.histories;
   const ranked: Ranked[] = [];
   let liveCount = 0;
 
@@ -93,7 +191,7 @@ export default async function DashboardPage() {
   const strongest = ranked.slice(0, 8);
   const weakest = ranked.slice(-6).reverse();
 
-  const origin: DataOrigin = liveCount >= DASHBOARD_SLICE.length / 2 ? "live" : "sample";
+  const origin: DataOrigin = liveCount >= Math.max(1, ranked.length / 2) ? "live" : "sample";
 
   // Market breadth from what we just scanned.
   const bullish = ranked.filter((r) => r.score >= 20).length;
@@ -103,24 +201,36 @@ export default async function DashboardPage() {
   const niftyReturn1m = benchmark.data.length > 21 ? roc(benchmark.data, 21) : null;
   const niftyReturn3m = benchmark.data.length > 63 ? roc(benchmark.data, 63) : null;
 
+  if (ranked.length === 0) {
+    return (
+      <section className="surface p-6">
+        <h2 className="text-lg">No names could be scored on this pass</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--color-paper-dim)]">
+          The scan reached {outcome.fetched + outcome.fromCache} of {DASHBOARD_SLICE.length} symbols before its time
+          budget ran out, and none came back with the 220 sessions a score needs. Reload to resume — each pass caches
+          what it read, so the next one starts further along. Check <code>/api/health</code> if it does not improve.
+        </p>
+      </section>
+    );
+  }
+
   return (
     <>
-      <AppNav />
-
-      <main className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6">
-        <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
-          <div className="max-w-2xl">
-            <h1 className="text-3xl sm:text-4xl">Dashboard</h1>
-            <p className="mt-3 text-[var(--color-paper-dim)]">
-              A swing-horizon read on {ranked.length} liquid NSE names, refreshed every fifteen minutes.
-            </p>
-          </div>
-          <OriginBadge origin={origin} />
-        </header>
-
-        <div className="mb-8 max-w-2xl lg:hidden">
-          <SymbolSearch />
-        </div>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-[var(--color-paper-dim)]">
+          Scored {ranked.length} of {DASHBOARD_SLICE.length} names
+          {outcome.skipped > 0 && (
+            <span className="text-[var(--color-paper-faint)]">
+              {" "}
+              · {outcome.skipped} not reached this pass, reload to continue
+            </span>
+          )}
+          {outcome.fromCache > 0 && (
+            <span className="text-[var(--color-paper-faint)]"> · {outcome.fromCache} from cache</span>
+          )}
+        </p>
+        <OriginBadge origin={origin} />
+      </div>
 
         {/* --- Breadth ---------------------------------------------------- */}
         <section className="surface mb-6 p-5">
@@ -268,30 +378,6 @@ export default async function DashboardPage() {
           </section>
         )}
 
-        {/* --- Next actions ----------------------------------------------- */}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Link href="/screener" className="surface p-5">
-            <Filter size={20} className="text-[var(--color-signal-500)]" />
-            <h3 className="mt-3 text-lg">Screen the full universe</h3>
-            <p className="mt-1.5 text-sm text-[var(--color-paper-dim)]">
-              This dashboard reads the 40 most liquid names. The screener works across the{" "}
-              {UNIVERSE_SIZE.toLocaleString("en-IN")}-name NSE universe, with filters you define.
-            </p>
-          </Link>
-          <Link href="/backtest" className="surface p-5">
-            <Activity size={20} className="text-[var(--color-signal-500)]" />
-            <h3 className="mt-3 text-lg">Test a strategy before trusting it</h3>
-            <p className="mt-1.5 text-sm text-[var(--color-paper-dim)]">
-              Find out whether the approach you are considering has actually worked on the stock you are considering it
-              for.
-            </p>
-          </Link>
-        </div>
-
-        <Disclaimer className="mt-10 max-w-3xl" />
-      </main>
-
-      <AppFooter />
     </>
   );
 }

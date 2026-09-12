@@ -74,7 +74,7 @@ export interface SearchResult {
 export type DataOrigin = "live" | "sample";
 
 /** Which upstream actually served the data. Shown in the UI, not just logged. */
-export type DataProvider = "angelone" | "yahoo" | "sample";
+export type DataProvider = "angelone" | "yahoo" | "sample" | "nse-dataset" | "nse";
 
 export interface Sourced<T> {
   data: T;
@@ -186,15 +186,72 @@ export const VERDICT_META: Record<Verdict, VerdictMeta> = {
   avoid: { label: "Avoid", tone: "negative" },
 };
 
+/**
+ * The minimum reward-to-risk the engine will publish on a first target.
+ *
+ * This is a hard floor, not a preference. A plan whose first objective pays
+ * less than it risks is not a trade, and printing "1 : 0.2" next to an
+ * otherwise positive verdict is worse than printing nothing — it reads as a
+ * recommendation to take a bet with negative expectancy. When the structure
+ * cannot support 1:1 from the current price, the engine returns a `wait` plan
+ * with the level that would restore it instead of degrading the ratio.
+ */
+export const MIN_FIRST_TARGET_RR = 1;
+
+export interface TradeTarget {
+  label: string;
+  price: number;
+  rMultiple: number;
+  gainPercent: number;
+  /** Why this level, in one clause. Empty for pure R-multiple projections. */
+  basis: string;
+}
+
+/**
+ * `actionable` — the levels describe a trade that can be taken now.
+ * `wait`       — the levels describe a trade that becomes valid at a price the
+ *                stock has not reached. Entering today would mean a sub-1:1
+ *                first target, so the engine declines to call it a setup.
+ */
+export type PlanStatus = "actionable" | "wait";
+
+export interface WaitForEntry {
+  /** One sentence naming why entering now does not work. */
+  reason: string;
+  /** The level capping the upside. */
+  blockingResistance: number;
+  /** What the reward-to-risk would be on an entry at today's price. */
+  rrIfEnteredNow: number;
+  /** Limit-entry price that restores the floor ratio. */
+  idealEntry: number;
+  /** Price that invalidates the pullback thesis instead. */
+  breakoutTrigger: number;
+  /** The two branches, as instructions. */
+  steps: string[];
+}
+
 export interface TradePlan {
-  /** Suggested entry band. */
+  status: PlanStatus;
+  /** Suggested entry band. For a `wait` plan this is the pullback band. */
   entryLow: number;
   entryHigh: number;
-  /** ATR-derived invalidation level. */
+  /** Invalidation level, anchored on structure where one exists. */
   stopLoss: number;
   stopPercent: number;
-  targets: { label: string; price: number; rMultiple: number; gainPercent: number }[];
+  /** How the stop was placed, in one clause. */
+  stopBasis: string;
+  targets: TradeTarget[];
+  /** Reward-to-risk on the first target. Never below MIN_FIRST_TARGET_RR. */
   riskRewardRatio: number;
+  /** Total upside to the final target, as a percentage. */
+  totalUpsidePercent: number;
+  /** Present only when `status` is `wait`. */
+  wait: WaitForEntry | null;
+  /**
+   * Set when the ladder is technically valid but the payoff is too small to
+   * justify the horizon — a positional hold offering 9% over a year, say.
+   */
+  rewardNote: string | null;
   /** Shares for a 1% account risk on a 100,000 account, as a concrete example. */
   positionSizeExample: { accountSize: number; riskPercent: number; shares: number; capitalRequired: number };
   atr: number;
@@ -228,10 +285,30 @@ export interface TechnicalAnalysis {
     resistances: PivotLevel[];
   };
   plan: TradePlan | null;
+  /**
+   * Kept for API consumers and metadata. The UI reads `narrativePoints`
+   * instead: the same content as one paragraph was a wall of text nobody
+   * finished reading.
+   */
   narrative: string;
+  /** The summary as scannable, labelled points. This is what the UI renders. */
+  narrativePoints: NarrativePoint[];
   keyPoints: string[];
   risks: string[];
   narrativeSource: "engine" | "llm";
+}
+
+/**
+ * One line of the written summary.
+ *
+ * `label` is the two-or-three word heading a reader scans for; `text` is the
+ * conclusion. Splitting them is what makes the block skimmable — a reader
+ * looking only for the trade plan can find it without reading the trend read.
+ */
+export interface NarrativePoint {
+  label: string;
+  text: string;
+  tone: "bullish" | "bearish" | "neutral";
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +418,10 @@ export interface FundamentalAnalysis {
   verdict: Verdict;
   confidence: number;
   groups: SignalGroup[];
+  /** Kept for API consumers. The UI renders `narrativePoints`. */
   narrative: string;
+  /** The summary as scannable, labelled points. */
+  narrativePoints: NarrativePoint[];
   keyPoints: string[];
   risks: string[];
   /** Quality tier for positional suitability. */

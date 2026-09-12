@@ -9,8 +9,9 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types --experimental-loader ./tests/alias-loader.mjs tests/*.test.ts",
-    "verify": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "test": "node --test --experimental-strip-types --experimental-loader ./scripts/ts-loader.mjs tests/*.test.ts",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "ingest:fundamentals": "node --experimental-strip-types --conditions=react-server --experimental-loader ./scripts/ts-loader.mjs scripts/ingest-fundamentals.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

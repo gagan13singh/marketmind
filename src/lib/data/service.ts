@@ -16,11 +16,13 @@ import {
   fetchAngelHistory,
   fetchAngelQuote,
   fetchAngelTodayBars,
+  instrumentsStillLoading,
   withTodayBar,
 } from "./angel";
 import { resample } from "@/lib/indicators";
 import { sampleCandles, sampleFundamentals, sampleQuote } from "./sample";
 import { displaySymbol, findInUniverse, normalizeSymbol, searchUniverse } from "./universe";
+import { datasetFundamentals } from "./fundamentals/dataset";
 
 /**
  * The single entry point the rest of the app uses for market data.
@@ -44,6 +46,8 @@ const FORCED_SAMPLE_NOTICE =
  */
 function sampleNotice(reason?: string, detail?: string): string {
   switch (reason) {
+    case "loading":
+      return "Angel One's instrument list is still downloading. This view is showing generated sample data for a few seconds and will switch to live prices on the next load — no action needed.";
     case "not-configured":
       return "Angel One credentials are not configured, so this view is running on generated sample data. Add ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN and ANGEL_TOTP_SECRET to your environment, then reload.";
     case "auth-failed":
@@ -64,7 +68,7 @@ function sampleNotice(reason?: string, detail?: string): string {
 const SAMPLE_NOTICE = sampleNotice();
 
 const FUNDAMENTAL_SAMPLE_NOTICE =
-  "Live financial statements were unavailable for this symbol, so the figures below are generated sample data. They are illustrative and must not be used for real investment decisions.";
+  "No real statements are available for this symbol, so the figures below are generated sample data and must not be used for any decision. The fix is to build the local dataset: run `npm run ingest:fundamentals`, which pulls filings from NSE and writes data/fundamentals.json. See /api/health for what is currently loaded.";
 
 // --- Simple TTL cache (per serverless instance) -----------------------------
 
@@ -152,6 +156,18 @@ const TTL = {
    */
   sampleHistory: 45 * 1000,
   sampleQuote: 45 * 1000,
+  /**
+   * A miss caused by the instrument master still downloading is not cached in
+   * any meaningful sense.
+   *
+   * This exists because the fast-fallback fix created a worse bug than the one
+   * it solved: pages stopped blocking on the download, but the sample data
+   * they rendered instead was cached for forty-five seconds, so the app served
+   * generated prices long after real ones were available. Two seconds is
+   * enough to stop a burst of concurrent requests stampeding the same lookup
+   * and short enough that the next page load is live.
+   */
+  transient: 2 * 1000,
 };
 
 /** Set MARKETMIND_FORCE_SAMPLE=true to develop entirely offline. */
@@ -228,7 +244,7 @@ async function settledDaily(symbol: string, range: string): Promise<Sourced<Cand
       notice: sampleNotice(outcome.reason, outcome.message),
       fetchedAt: stamp(),
     } satisfies Sourced<Candle[]>,
-    TTL.sampleHistory,
+    outcome.reason === "loading" ? TTL.transient : TTL.sampleHistory,
   );
 }
 
@@ -313,14 +329,22 @@ export async function getQuote(rawSymbol: string): Promise<Sourced<Quote>> {
     }
   }
 
+  // A quote generated while the instrument master is still downloading is
+  // held for seconds, not the full sample TTL, for the same reason as history.
+  const transient = !forceSample() && instrumentsStillLoading();
+
   const result: Sourced<Quote> = {
     data: sampleQuote(symbol),
     origin: "sample",
     provider: "sample",
-    notice: forceSample() ? FORCED_SAMPLE_NOTICE : sampleNotice(),
+    notice: forceSample()
+      ? FORCED_SAMPLE_NOTICE
+      : transient
+        ? sampleNotice("loading")
+        : sampleNotice(),
     fetchedAt: stamp(),
   };
-  return remember(key, result, TTL.sampleQuote);
+  return remember(key, result, transient ? TTL.transient : TTL.sampleQuote);
 }
 
 /** Build a Quote from raw OHLCV when the provider has no quote endpoint. */
@@ -445,6 +469,33 @@ export async function getFundamentals(rawSymbol: string): Promise<Sourced<Fundam
 
   const cached = cacheGet<Sourced<FundamentalSnapshot>>(key);
   if (cached) return cached;
+
+  /**
+   * The committed dataset first, and it costs no network call.
+   *
+   * Order matters here. Every live free source for Indian statements is rate
+   * limited, session-gated or blocked from datacenter IPs, so putting a live
+   * fetch first means the common case on a deployed instance is a slow failure
+   * followed by generated numbers — which is precisely the behaviour being
+   * fixed. The dataset is built offline by `npm run ingest:fundamentals`, so
+   * reading it is a disk read and always wins when it has the company.
+   */
+  if (!forceSample()) {
+    const local = await datasetFundamentals(symbol);
+    if (local) {
+      const asOfDate = local.builtAt.slice(0, 10);
+      const result: Sourced<FundamentalSnapshot> = {
+        data: local.snapshot,
+        origin: "live",
+        provider: "nse-dataset",
+        asOf: asOfDate,
+        fetchedAt: stamp(),
+        notice: `Statements are from NSE filings as collected on ${asOfDate}. Quarterly filings do not change between page views, so this is the correct granularity — rerun the ingest after a results season to refresh.`,
+      };
+      cacheSet(key, result, TTL.fundamentals);
+      return result;
+    }
+  }
 
   if (!forceSample()) {
     const summary = await fetchQuoteSummary(symbol);

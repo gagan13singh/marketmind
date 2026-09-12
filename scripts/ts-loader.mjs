@@ -3,15 +3,18 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 
 /**
- * Resolver hook for `node --test`.
+ * Resolver hook that teaches plain Node what the bundler already knows.
  *
- * Next.js resolves the "@/*" -> "./src/*" alias from tsconfig, but the bare
- * Node test runner does not. This hook teaches Node the same mapping so unit
- * tests can import application modules exactly as the app does, without
- * forcing relative-path imports into the source.
+ * Next.js resolves two things that bare Node does not: the `@/*` -> `./src/*`
+ * alias from tsconfig, and extensionless relative imports like
+ * `./cookie-jar`. Anything running application modules outside Next — the unit
+ * tests and the fundamentals ingest — needs both taught to it, or the import
+ * fails with ERR_MODULE_NOT_FOUND on code that compiles and runs fine in the
+ * app. Shared by `npm test` and `npm run ingest:fundamentals` so the two
+ * cannot drift apart.
  */
 
-const ROOT = path.resolve(import.meta.dirname, "..");
+const ROOT = path.resolve(import.meta.dirname, "..");  // repo root, from scripts/
 const SRC = path.join(ROOT, "src");
 
 /** Try a base path with the extensions bundlers add implicitly. */

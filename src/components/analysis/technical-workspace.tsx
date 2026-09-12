@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import type { Candle, Horizon, TechnicalAnalysis, Timeframe } from "@/types";
 import { HORIZON_META } from "@/types";
 import { resample } from "@/lib/indicators";
+import { useLiveCandles } from "@/lib/hooks/use-live-candles";
 import { cn } from "@/lib/utils/cn";
 import { PriceChart } from "@/components/charts/price-chart";
 import type { IndicatorId } from "@/lib/indicators/catalog";
@@ -24,14 +25,21 @@ type AnalysisKey = "swing-daily" | "swing-weekly" | "positional-weekly" | "posit
  * passed in, so switching between them is instant rather than a round trip.
  */
 export function TechnicalWorkspace({
+  symbol,
   candles,
   analyses,
 }: {
+  symbol: string;
   candles: Candle[];
   analyses: Record<AnalysisKey, TechnicalAnalysis | null>;
 }) {
   const [horizon, setHorizon] = useState<Horizon>("swing");
   const [timeframe, setTimeframe] = useState<Timeframe>("daily");
+
+  // The server renders settled history; this keeps the newest bar moving while
+  // the session is open. Without it the chart was a snapshot that never
+  // redrew, however long the tab stayed open.
+  const live = useLiveCandles(symbol, candles);
 
   // Positional analysis is not offered on daily candles — the whole point of
   // the horizon is that it reads slower structure.
@@ -47,9 +55,9 @@ export function TechnicalWorkspace({
   const analysis = analyses[key] ?? analyses["swing-daily"];
 
   const chartCandles = useMemo(() => {
-    if (timeframe === "daily") return candles;
-    return resample(candles, timeframe);
-  }, [candles, timeframe]);
+    if (timeframe === "daily") return live.candles;
+    return resample(live.candles, timeframe);
+  }, [live.candles, timeframe]);
 
   /**
    * Starting indicators, matched to the horizon being read. These are only a
@@ -102,6 +110,24 @@ export function TechnicalWorkspace({
       />
 
       <div className="surface p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <p className="text-xs text-[var(--color-paper-faint)]">
+            {live.error
+              ? live.error
+              : live.streaming
+                ? `Live — the current bar refreshes every 30 seconds${live.updatedAt ? `, last at ${live.updatedAt.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}`
+                : "Market closed. Showing the last completed session."}
+          </p>
+          <button
+            type="button"
+            onClick={live.refresh}
+            disabled={live.refreshing}
+            className="text-xs text-[var(--color-signal-400)] hover:text-[var(--color-signal-500)] disabled:opacity-50"
+          >
+            {live.refreshing ? "Refreshing…" : "Refresh now"}
+          </button>
+        </div>
+
         <PriceChart
           key={horizon}
           candles={chartCandles}
@@ -120,6 +146,7 @@ export function TechnicalWorkspace({
 
       <NarrativeBlock
         narrative={analysis.narrative}
+        points={analysis.narrativePoints}
         keyPoints={analysis.keyPoints}
         risks={analysis.risks}
       />

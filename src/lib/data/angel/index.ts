@@ -14,6 +14,7 @@ import {
 import {
   getInstrumentsWithin,
   instrumentStatus,
+  isInstrumentLoadPending,
   lastInstrumentError,
   resolveInstrument,
 } from "./instruments";
@@ -30,6 +31,11 @@ import {
  */
 
 export { isConfigured as isAngelConfigured, clearSession as clearAngelSession };
+
+/** True while the instrument master download is in flight. */
+export function instrumentsStillLoading(): boolean {
+  return !instrumentStatus().loaded && isInstrumentLoadPending();
+}
 
 const HISTORY_PATH = "/rest/secure/angelbroking/historical/v1/getCandleData";
 const QUOTE_PATH = "/rest/secure/angelbroking/market/v1/quote/";
@@ -176,19 +182,34 @@ export async function fetchAngelHistory(
     // first as the second sends the reader hunting for a bad ticker when the
     // real issue is that no tickers can be resolved at all.
     const loaded = instrumentStatus().loaded;
-    return loaded
-      ? {
-          candles: null,
-          reason: "not-found",
-          message: `${symbol} is not in Angel One's NSE instrument list.`,
-        }
-      : {
-          candles: null,
-          reason: "network",
-          message: `Instrument master unavailable, so ${symbol} cannot be resolved to a token.${
-            lastInstrumentError() ? ` ${lastInstrumentError()}` : ""
-          }`,
-        };
+    if (loaded) {
+      return {
+        candles: null,
+        reason: "not-found",
+        message: `${symbol} is not in Angel One's NSE instrument list.`,
+      };
+    }
+
+    // Still downloading is a different thing from failed, and the difference
+    // is load-bearing: the caller caches a transient miss for seconds and a
+    // real failure for much longer. Conflating them is what made the app sit
+    // on generated numbers long after live data had become available.
+    if (isInstrumentLoadPending()) {
+      return {
+        candles: null,
+        reason: "loading",
+        message:
+          "Angel One's instrument list is still downloading, so this view is showing generated sample data for a moment.",
+      };
+    }
+
+    return {
+      candles: null,
+      reason: "network",
+      message: `Instrument master unavailable, so ${symbol} cannot be resolved to a token.${
+        lastInstrumentError() ? ` ${lastInstrumentError()}` : ""
+      }`,
+    };
   }
 
   const years = yearsForRange(range);

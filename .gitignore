@@ -6,3 +6,8 @@ out
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts
+
+# Built by `npm run ingest:fundamentals`. Large, regenerable, and specific to
+# when it was run — commit it deliberately if you want Vercel to serve it,
+# since Vercel builds from the repo and cannot run the ingest itself.
+# data/fundamentals.json

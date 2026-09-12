@@ -173,11 +173,69 @@ Indicator tests check output against hand-calculated values (SMA of 1,2,3 is 2; 
 
 ---
 
-## Data sources and limitations
+## Fundamental data
 
-- Market data: Yahoo Finance public endpoints. Undocumented, rate-limited, and occasionally missing fields for Indian securities. The app handles all three.
-- Shareholding: Yahoo exposes insider and institutional percentages but **not** the promoter/FII/DII split or pledge data that Indian filings contain. Where those are unavailable the UI shows a dash and confidence drops. For pledge data specifically, check the company's latest exchange filing.
-- The screening universe is ~110 curated liquid NSE names rather than the full Nifty 500, because a cold scan fetches history per symbol and serverless platforms enforce execution limits.
+Prices come from Angel One. Fundamentals cannot: SmartAPI is an execution API
+and carries no statements at all. So fundamentals come from **NSE's own
+filings**, and they are collected **offline** rather than at request time.
+
+That design is deliberate, and it is the fix for the sample-data problem:
+
+| Source | Covers | Free? | Works from Vercel? |
+| --- | --- | --- | --- |
+| Angel One SmartAPI | prices only | yes | yes |
+| Yahoo `quoteSummary` | partial statements | yes | **no** — 401/429 from datacenter IPs |
+| NSE `results-comparision` | quarterly P&L, EPS | yes | **no** — session-gated, blocks datacenter ranges |
+| NSE shareholding pattern | promoter / FII / DII / pledge | yes | **no** — same |
+| Screener.in, Tickertape | everything | no public API | scraping, against their terms |
+
+Every free source for Indian statements is either session-gated, rate limited
+to a few requests a second, or refuses datacenter IP ranges. A Vercel function
+is a datacenter IP. Fetching on the request path therefore fails slowly and
+falls back to generated numbers — which is exactly what was happening.
+
+### Building the dataset
+
+```bash
+npm run ingest:fundamentals                # top 500 by turnover
+npm run ingest:fundamentals -- --all       # every listed equity, ~70 minutes
+npm run ingest:fundamentals -- --resume    # continue an interrupted run
+```
+
+Run it **from an ordinary home connection**, not a server or a VPN — NSE will
+refuse the others. It writes `data/fundamentals.json`, checkpoints every 25
+companies so an interrupted run loses nothing, and merges on `--resume`.
+
+The app then reads that file from disk with no network call, which makes the
+fundamentals page the fastest page in the product instead of the slowest. To
+serve it on Vercel, commit the file: Vercel builds from the repo and cannot run
+the ingest itself. `outputFileTracingIncludes` in `next.config.ts` traces
+`data/**` into the function bundle — without that the file is in the repo, the
+build succeeds, and production reads ENOENT.
+
+### What this gets you, and what it does not
+
+**Gained:** the promoter / FII / DII split and pledge percentage, from every
+quarterly filing. Yahoo has none of it, and a rising pledge against a falling
+promoter stake is among the most predictive things in the dataset.
+
+**Still missing:** balance sheet and cash flow. NSE publishes those only inside
+the XBRL documents attached to each filing, not through any JSON endpoint.
+`fetchNseFilings` captures the XBRL links so a follow-up pass has somewhere to
+start, but that pass is not written. Until it is, those two groups score as
+absent — which lowers confidence rather than biasing the result, because
+missing metrics are dropped rather than guessed. An invented balance sheet
+would score well and mean nothing.
+
+Run `/api/health` to see what is actually loaded.
+
+## Other limitations
+
+- Market data is Angel One SmartAPI: rate limited to 3 requests/second on the
+  historical endpoint, which is the binding constraint on every bulk scan.
+- The dashboard scans within a time budget (`MARKETMIND_DASHBOARD_BUDGET_MS`,
+  default 6s) and streams its results, so a cold instance shows a partial
+  ranking rather than a blank page. Reloading resumes from the cache.
 
 ---
 

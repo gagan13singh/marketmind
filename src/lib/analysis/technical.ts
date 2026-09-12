@@ -1,14 +1,17 @@
 import type {
   Candle,
   Horizon,
+  NarrativePoint,
   SignalDirection,
   SignalGroup,
   SignalReading,
   TechnicalAnalysis,
   Timeframe,
   TradePlan,
+  TradeTarget,
   Verdict,
 } from "@/types";
+import { MIN_FIRST_TARGET_RR } from "@/types";
 import {
   adx,
   atr,
@@ -671,62 +674,367 @@ function computeConfidence(groups: SignalGroup[]): number {
   return Math.round(clamp(agreement * 0.65 + decisiveness * 0.35, 0, 100));
 }
 
+/**
+ * Horizon-specific plan geometry.
+ *
+ * `minTotalUpside` is the payoff below which a plan is flagged as not worth
+ * the horizon. A positional trade is an allocation of capital for six to
+ * twelve months; if the whole ladder only pays 9%, the correct output is to
+ * say so rather than to dress it up as a setup.
+ */
+const PLAN_GEOMETRY: Record<Horizon, {
+  atrStopMultiple: number;
+  minStopAtr: number;
+  laddderR: [number, number, number];
+  minTotalUpside: number;
+  pivotLookback: number;
+  maxPullbackPercent: number;
+}> = {
+  swing: {
+    atrStopMultiple: 2,
+    // A stop closer than this is inside the noise and will be taken out by a
+    // single ordinary session, which turns a good thesis into a loss.
+    minStopAtr: 1.1,
+    laddderR: [1, 2, 3],
+    minTotalUpside: 6,
+    pivotLookback: 5,
+    maxPullbackPercent: 12,
+  },
+  positional: {
+    atrStopMultiple: 3,
+    minStopAtr: 1.8,
+    // A positional hold is only worth the capital lockup if the tail of the
+    // ladder is large, so the upper rungs are set far wider than the swing
+    // ladder rather than at the same multiples.
+    laddderR: [1.2, 3, 6],
+    minTotalUpside: 25,
+    pivotLookback: 8,
+    maxPullbackPercent: 20,
+  },
+};
+
+/**
+ * Build the trade plan.
+ *
+ * Two rules govern everything below:
+ *
+ *  1. **The first target must pay at least as much as the trade risks.** The
+ *     previous version computed an ATR target ladder, then overwrote target 1
+ *     with the nearest resistance and recomputed its R multiple from whatever
+ *     that happened to be. When resistance sat close overhead — a very common
+ *     situation, and exactly the one where a plan matters most — that produced
+ *     ratios like 1:0.2 alongside a positive verdict. The ladder is now built
+ *     from the floor ratio outward and the floor is never crossed.
+ *
+ *  2. **When the structure cannot support the floor ratio from today's price,
+ *     say so and name the level that would.** "Wait for a pullback to 4,780"
+ *     is actionable. "1:0.2" is not.
+ */
 function buildTradePlan(data: Candle[], horizon: Horizon): TradePlan | null {
   const price = data[data.length - 1].close;
   const atrValue = latest(atr(data, 14));
   if (atrValue === null || atrValue <= 0 || price <= 0) return null;
 
-  // Swing stops are tighter; positional stops must survive multi-week noise.
-  const stopMultiplier = horizon === "swing" ? 2 : 3;
-  const stopLoss = price - atrValue * stopMultiplier;
+  const geo = PLAN_GEOMETRY[horizon];
+  const levels = supportResistance(data, price, 1.5, geo.pivotLookback);
+
+  const nearestSupport = levels.supports.find((l) => l.price < price);
+  const nearestResistance = levels.resistances.find((l) => l.price > price);
+
+  // --- Stop placement ------------------------------------------------------
+  // Anchored on structure where structure exists. A stop just under the shelf
+  // price has actually respected is both tighter and more meaningful than a
+  // blind ATR multiple, and a tighter stop is most of what makes 1:1 reachable
+  // without inventing an optimistic target.
+  const atrStop = price - atrValue * geo.atrStopMultiple;
+  const structuralStop = nearestSupport ? nearestSupport.price - atrValue * 0.35 : null;
+
+  // Never tighter than the noise floor, never wider than the ATR stop.
+  const noiseFloor = price - atrValue * geo.minStopAtr;
+  let stopLoss = atrStop;
+  let stopBasis = `${geo.atrStopMultiple}× ATR below price`;
+
+  if (structuralStop !== null && structuralStop > atrStop && structuralStop < noiseFloor) {
+    stopLoss = structuralStop;
+    stopBasis = `just under support at ${nearestSupport!.price.toFixed(2)} (${nearestSupport!.touches} touches)`;
+  }
+
   const risk = price - stopLoss;
   if (risk <= 0) return null;
 
-  const levels = supportResistance(data, price, 1.5, horizon === "swing" ? 5 : 8);
-  const nearestResistance = levels.resistances[0];
-
-  const targetMultiples = horizon === "swing" ? [1.5, 2.5, 4] : [2, 4, 6];
-  const targets = targetMultiples.map((r, i) => {
-    const targetPrice = price + risk * r;
-    return {
-      label: `Target ${i + 1}`,
-      price: targetPrice,
-      rMultiple: r,
-      gainPercent: ((targetPrice - price) / price) * 100,
-    };
-  });
-
-  // If a real resistance level sits below the first target, that is the more
-  // honest first objective.
-  if (nearestResistance && nearestResistance.price > price && nearestResistance.price < targets[0].price) {
-    targets[0] = {
-      label: "Target 1 (resistance)",
-      price: nearestResistance.price,
-      rMultiple: (nearestResistance.price - price) / risk,
-      gainPercent: ((nearestResistance.price - price) / price) * 100,
-    };
-  }
+  // --- Where the upside actually ends --------------------------------------
+  // Exit into resistance, not at it: the last stretch to a level with a
+  // history of rejections is the part least likely to be captured.
+  const ceiling = nearestResistance
+    ? Math.max(price, nearestResistance.price - atrValue * 0.15)
+    : null;
+  const rrToCeiling = ceiling !== null ? (ceiling - price) / risk : Infinity;
 
   const accountSize = 100_000;
   const riskPercent = 1;
+  const common = {
+    atr: atrValue,
+    atrPercent: (atrValue / price) * 100,
+    expectedHold: horizon === "swing" ? ("1–6 weeks" as const) : ("3–12 months" as const),
+  };
+
+  // --- Case 1: the nearest ceiling is too close to pay for the risk --------
+  if (ceiling !== null && rrToCeiling < MIN_FIRST_TARGET_RR) {
+    return buildWaitPlan({
+      data,
+      price,
+      atrValue,
+      geo,
+      horizon,
+      ceiling,
+      rrToCeiling,
+      blockingResistance: nearestResistance!.price,
+      nearestSupport: nearestSupport?.price ?? null,
+      accountSize,
+      riskPercent,
+      common,
+    });
+  }
+
+  // --- Case 2: there is room. Build the ladder from the floor ratio out ----
+  const targets: TradeTarget[] = [];
+
+  // Target 1 is the structural ceiling when that clears the floor ratio,
+  // otherwise the floor ratio itself. Because of the guard above, the ceiling
+  // always clears it here — the Math.max is belt and braces against a level
+  // landing exactly on the boundary.
+  const firstR = ceiling !== null ? Math.max(geo.laddderR[0], rrToCeiling) : geo.laddderR[0];
+  const firstPrice = ceiling !== null && rrToCeiling >= geo.laddderR[0] ? ceiling : price + risk * geo.laddderR[0];
+
+  targets.push({
+    label: "Target 1",
+    price: firstPrice,
+    rMultiple: (firstPrice - price) / risk,
+    gainPercent: ((firstPrice - price) / price) * 100,
+    basis:
+      ceiling !== null && rrToCeiling >= geo.laddderR[0]
+        ? `resistance at ${nearestResistance!.price.toFixed(2)}, exited just below it`
+        : `${firstR.toFixed(1)}× the risk taken`,
+  });
+
+  // Upper rungs: the next real levels overhead where they exist, otherwise R
+  // projections. Each rung must clear the one below it, so a cluster of tight
+  // levels cannot produce a flat or inverted ladder.
+  const higherLevels = levels.resistances
+    .filter((l) => l.price - atrValue * 0.15 > targets[0].price)
+    .sort((a, b) => a.price - b.price);
+
+  for (let i = 1; i < geo.laddderR.length; i += 1) {
+    const projected = price + risk * geo.laddderR[i];
+    const level = higherLevels[i - 1];
+    const useLevel = level !== undefined && level.price - atrValue * 0.15 > targets[i - 1].price * 1.005;
+    const candidate = useLevel ? level.price - atrValue * 0.15 : projected;
+    const targetPrice = Math.max(candidate, targets[i - 1].price * 1.01);
+
+    targets.push({
+      label: `Target ${i + 1}`,
+      price: targetPrice,
+      rMultiple: (targetPrice - price) / risk,
+      gainPercent: ((targetPrice - price) / price) * 100,
+      basis: useLevel
+        ? `resistance at ${level.price.toFixed(2)}`
+        : `${((targetPrice - price) / risk).toFixed(1)}× the risk taken`,
+    });
+  }
+
   const shares = Math.floor((accountSize * (riskPercent / 100)) / risk);
+  const totalUpsidePercent = targets[targets.length - 1].gainPercent;
 
   return {
+    status: "actionable",
     entryLow: price - atrValue * 0.5,
     entryHigh: price + atrValue * 0.3,
     stopLoss,
     stopPercent: (risk / price) * 100,
+    stopBasis,
     targets,
     riskRewardRatio: targets[0].rMultiple,
-    positionSizeExample: {
-      accountSize,
-      riskPercent,
-      shares,
-      capitalRequired: shares * price,
+    totalUpsidePercent,
+    wait: null,
+    rewardNote: rewardNoteFor(horizon, geo, totalUpsidePercent),
+    positionSizeExample: { accountSize, riskPercent, shares, capitalRequired: shares * price },
+    ...common,
+  };
+}
+
+/**
+ * Flag a ladder that is coherent but too small to justify the holding period.
+ *
+ * Passing this test is not the same as the trade being good. It only means the
+ * payoff is large enough to be worth the horizon's opportunity cost.
+ */
+function rewardNoteFor(
+  horizon: Horizon,
+  geo: (typeof PLAN_GEOMETRY)[Horizon],
+  totalUpsidePercent: number,
+): string | null {
+  if (totalUpsidePercent >= geo.minTotalUpside) return null;
+
+  return horizon === "positional"
+    ? `The full ladder only reaches ${totalUpsidePercent.toFixed(1)}% upside. For a three-to-twelve-month hold that is a poor use of the capital even though the ratio is sound — the levels above are close together, which is what a stock entering a range looks like. A swing-horizon read on the same chart is the more honest expression.`
+    : `The full ladder only reaches ${totalUpsidePercent.toFixed(1)}% upside. The ratio is sound but the absolute move is small, so costs and slippage eat a meaningful share of it.`;
+}
+
+/**
+ * The plan for a stock whose upside is capped before it pays for its risk.
+ *
+ * Solved rather than guessed. For an entry `E`, stop `S` and target `T`, the
+ * ratio is `(T − E) / (E − S)`. Setting that equal to the floor ratio `k` and
+ * solving for `E` gives the exact price at which the trade becomes valid:
+ *
+ *     E = (T + k·S) / (1 + k)
+ *
+ * That level is published as a limit entry. The alternative branch — the
+ * resistance breaking instead of price pulling back — is published as a
+ * trigger, because a trader watching only for the pullback misses the case
+ * where the ceiling simply stops being a ceiling.
+ */
+function buildWaitPlan(args: {
+  data: Candle[];
+  price: number;
+  atrValue: number;
+  geo: (typeof PLAN_GEOMETRY)[Horizon];
+  horizon: Horizon;
+  ceiling: number;
+  rrToCeiling: number;
+  blockingResistance: number;
+  nearestSupport: number | null;
+  accountSize: number;
+  riskPercent: number;
+  common: { atr: number; atrPercent: number; expectedHold: string };
+}): TradePlan | null {
+  const {
+    price, atrValue, geo, horizon, ceiling, rrToCeiling,
+    blockingResistance, nearestSupport, accountSize, riskPercent, common,
+  } = args;
+
+  const k = MIN_FIRST_TARGET_RR;
+
+  // The stop for a pullback entry sits under the support being bought, or a
+  // clean ATR multiple below the entry when there is no support to lean on.
+  const plannedStop =
+    nearestSupport !== null
+      ? nearestSupport - atrValue * 0.35
+      : price - atrValue * (geo.atrStopMultiple + 1);
+
+  const idealEntry = (ceiling + k * plannedStop) / (1 + k);
+  const plannedRisk = idealEntry - plannedStop;
+  const pullbackPercent = ((price - idealEntry) / price) * 100;
+
+  // A trigger above the level, not at it: the first print through resistance
+  // is frequently a wick that closes back under.
+  const breakoutTrigger = blockingResistance + atrValue * 0.35;
+
+  const shortfall = `Immediate resistance at ${blockingResistance.toFixed(2)} is only ${(((blockingResistance - price) / price) * 100).toFixed(1)}% above price, so entering here risks ${((price - plannedStop) / price * 100).toFixed(1)}% to make ${(((ceiling - price) / price) * 100).toFixed(1)}% — about 1:${rrToCeiling.toFixed(2)} before costs.`;
+
+  const steps: string[] = [];
+  const pullbackViable =
+    plannedRisk > 0 &&
+    idealEntry < price &&
+    idealEntry > plannedStop &&
+    pullbackPercent <= geo.maxPullbackPercent;
+
+  if (pullbackViable) {
+    steps.push(
+      `Work a limit at ${idealEntry.toFixed(2)} — ${pullbackPercent.toFixed(1)}% below the current price. At that entry, with the stop at ${plannedStop.toFixed(2)}, the same ${blockingResistance.toFixed(2)} ceiling pays 1:${k.toFixed(1)} instead of 1:${rrToCeiling.toFixed(2)}.`,
+    );
+  } else {
+    steps.push(
+      `A pullback deep enough to fix the ratio would be ${pullbackPercent.toFixed(1)}% — far enough that it would damage the setup it is meant to improve. Treat the ceiling as the decision point instead.`,
+    );
+  }
+
+  steps.push(
+    `Alternatively, let it break: a close above ${breakoutTrigger.toFixed(2)} removes the cap entirely, and the plan can then be rebuilt against the next level overhead rather than this one.`,
+  );
+  steps.push(
+    `Do neither in between. Buying into a ceiling with the stop where it has to be is the single most reliable way to take a full loss on a chart that was right about direction.`,
+  );
+
+  if (!pullbackViable) {
+    // Nothing coherent to publish: no entry that satisfies the floor ratio and
+    // no sensible pullback. The UI renders this as "no plan", which is correct.
+    return {
+      status: "wait",
+      entryLow: price,
+      entryHigh: price,
+      stopLoss: plannedStop,
+      stopPercent: ((price - plannedStop) / price) * 100,
+      stopBasis:
+        nearestSupport !== null
+          ? `just under support at ${nearestSupport.toFixed(2)}`
+          : `${geo.atrStopMultiple + 1}× ATR below price`,
+      targets: [],
+      riskRewardRatio: k,
+      totalUpsidePercent: 0,
+      wait: {
+        reason: shortfall,
+        blockingResistance,
+        rrIfEnteredNow: rrToCeiling,
+        idealEntry,
+        breakoutTrigger,
+        steps,
+      },
+      rewardNote: null,
+      positionSizeExample: { accountSize, riskPercent, shares: 0, capitalRequired: 0 },
+      ...common,
+    };
+  }
+
+  // Ladder measured from the planned entry, not from today's price.
+  const laddderFromEntry: TradeTarget[] = [
+    {
+      label: "Target 1",
+      price: ceiling,
+      rMultiple: (ceiling - idealEntry) / plannedRisk,
+      gainPercent: ((ceiling - idealEntry) / idealEntry) * 100,
+      basis: `resistance at ${blockingResistance.toFixed(2)}, exited just below it`,
     },
-    atr: atrValue,
-    atrPercent: (atrValue / price) * 100,
-    expectedHold: horizon === "swing" ? "1–6 weeks" : "3–12 months",
+  ];
+  for (let i = 1; i < geo.laddderR.length; i += 1) {
+    const targetPrice = idealEntry + plannedRisk * geo.laddderR[i];
+    if (targetPrice <= laddderFromEntry[i - 1].price) continue;
+    laddderFromEntry.push({
+      label: `Target ${i + 1}`,
+      price: targetPrice,
+      rMultiple: geo.laddderR[i],
+      gainPercent: ((targetPrice - idealEntry) / idealEntry) * 100,
+      basis: `${geo.laddderR[i].toFixed(1)}× the risk taken, valid only once ${blockingResistance.toFixed(2)} is through`,
+    });
+  }
+
+  const shares = Math.floor((accountSize * (riskPercent / 100)) / plannedRisk);
+  const totalUpsidePercent = laddderFromEntry[laddderFromEntry.length - 1].gainPercent;
+
+  return {
+    status: "wait",
+    entryLow: idealEntry - atrValue * 0.25,
+    entryHigh: idealEntry + atrValue * 0.15,
+    stopLoss: plannedStop,
+    stopPercent: (plannedRisk / idealEntry) * 100,
+    stopBasis:
+      nearestSupport !== null
+        ? `just under support at ${nearestSupport.toFixed(2)}`
+        : `${geo.atrStopMultiple + 1}× ATR below the planned entry`,
+    targets: laddderFromEntry,
+    riskRewardRatio: laddderFromEntry[0].rMultiple,
+    totalUpsidePercent,
+    wait: {
+      reason: shortfall,
+      blockingResistance,
+      rrIfEnteredNow: rrToCeiling,
+      idealEntry,
+      breakoutTrigger,
+      steps,
+    },
+    rewardNote: rewardNoteFor(horizon, geo, totalUpsidePercent),
+    positionSizeExample: { accountSize, riskPercent, shares, capitalRequired: shares * idealEntry },
+    ...common,
   };
 }
 
@@ -739,7 +1047,7 @@ function buildNarrative(
   horizon: Horizon,
   trendRegime: string,
   plan: TradePlan | null,
-): { narrative: string; keyPoints: string[]; risks: string[] } {
+): { narrative: string; narrativePoints: NarrativePoint[]; keyPoints: string[]; risks: string[] } {
   const byKey = new Map(groups.map((g) => [g.key, g]));
   const trend = byKey.get("trend");
   const momentum = byKey.get("momentum");
@@ -757,34 +1065,98 @@ function buildNarrative(
     avoid: `The technical evidence is clearly negative for a ${horizonLabel} view.`,
   };
 
-  const parts: string[] = [];
-  parts.push(
-    `${verdictSentence[verdict]} The composite technical score is ${compositeScore.toFixed(0)} out of 100 with ${confidence}% signal agreement, built from ${groups.reduce((a, g) => a + g.readings.length, 0)} individual readings across five categories.`,
-  );
+  /**
+   * The summary is built as discrete points rather than one paragraph.
+   *
+   * The paragraph version ran to roughly 900 characters of unbroken prose,
+   * which is longer than anyone reads on a screen they are scanning for a
+   * price. Each point below answers exactly one question, and the labels are
+   * what a reader jumps between.
+   */
+  const points: NarrativePoint[] = [];
 
-  if (trend) {
-    parts.push(
-      `On trend, the market is in ${trendRegime}. ${trend.readings[0]?.conclusion ?? trend.summary}`,
-    );
-  }
+  const overallTone: NarrativePoint["tone"] =
+    compositeScore >= 20 ? "bullish" : compositeScore <= -20 ? "bearish" : "neutral";
+
+  points.push({
+    label: "The call",
+    text: `${verdictSentence[verdict]} Composite score ${compositeScore > 0 ? "+" : ""}${compositeScore.toFixed(0)} out of 100, at ${confidence}% signal agreement, from ${groups.reduce((a, g) => a + g.readings.length, 0)} readings.`,
+    tone: overallTone,
+  });
+
+  points.push({
+    label: "Trend",
+    text: trend
+      ? `${capitalise(trendRegime)}. ${firstSentence(trend.readings[0]?.conclusion ?? trend.summary)}`
+      : capitalise(trendRegime),
+    tone: toneOf(trend?.score ?? 0),
+  });
+
   if (momentum) {
-    const strongest = [...momentum.readings].sort((a, b) => Math.abs(b.score) - Math.abs(a.score))[0];
-    if (strongest) parts.push(`On momentum, ${strongest.conclusion.charAt(0).toLowerCase()}${strongest.conclusion.slice(1)}`);
-  }
-  if (structure) {
-    const strongest = [...structure.readings].sort((a, b) => Math.abs(b.score) - Math.abs(a.score))[0];
-    if (strongest) parts.push(strongest.conclusion);
-  }
-  if (volume) {
-    const strongest = [...volume.readings].sort((a, b) => Math.abs(b.score) - Math.abs(a.score))[0];
-    if (strongest) parts.push(strongest.conclusion);
+    const strongest = dominant(momentum);
+    if (strongest) {
+      points.push({
+        label: "Momentum",
+        text: `${strongest.label} at ${strongest.display}. ${firstSentence(strongest.conclusion)}`,
+        tone: toneOf(momentum.score),
+      });
+    }
   }
 
-  if (plan) {
-    parts.push(
-      `If acting on this, the mechanical plan derived from a ${plan.atrPercent.toFixed(2)}% ATR is: entry around ${plan.entryLow.toFixed(2)}–${plan.entryHigh.toFixed(2)}, stop at ${plan.stopLoss.toFixed(2)} (${plan.stopPercent.toFixed(1)}% away), first target ${plan.targets[0].price.toFixed(2)}. On a ₹1,00,000 account risking 1%, that is roughly ${plan.positionSizeExample.shares} shares.`,
-    );
+  if (structure) {
+    const strongest = dominant(structure);
+    if (strongest) {
+      points.push({
+        label: "Location",
+        text: firstSentence(strongest.conclusion),
+        tone: toneOf(structure.score),
+      });
+    }
   }
+
+  if (volume) {
+    const strongest = dominant(volume);
+    if (strongest) {
+      points.push({
+        label: "Participation",
+        text: `${strongest.label} at ${strongest.display}. ${firstSentence(strongest.conclusion)}`,
+        tone: toneOf(volume.score),
+      });
+    }
+  }
+
+  if (volatility) {
+    points.push({
+      label: "Volatility",
+      text: `ATR is ${plan ? `${plan.atrPercent.toFixed(2)}% of price. ` : ""}${firstSentence(dominant(volatility)?.conclusion ?? volatility.summary)}`,
+      tone: toneOf(volatility.score),
+    });
+  }
+
+  // The actionable line reads differently depending on whether the plan is
+  // takeable now. Saying "entry around X" for a setup the engine has just
+  // declined to endorse is the contradiction this replaces.
+  if (plan && plan.status === "actionable") {
+    points.push({
+      label: "The plan",
+      text: `Entry ${plan.entryLow.toFixed(2)}–${plan.entryHigh.toFixed(2)}, stop ${plan.stopLoss.toFixed(2)} (${plan.stopPercent.toFixed(1)}% away, ${plan.stopBasis}), first target ${plan.targets[0].price.toFixed(2)} at 1:${plan.riskRewardRatio.toFixed(1)}. On ₹1,00,000 risking 1%, about ${plan.positionSizeExample.shares} shares.`,
+      tone: "neutral",
+    });
+  } else if (plan && plan.wait) {
+    points.push({
+      label: "Not yet",
+      text: `${plan.wait.reason} ${plan.targets.length > 0 ? `A limit at ${plan.wait.idealEntry.toFixed(2)} restores 1:${plan.riskRewardRatio.toFixed(1)}; a close above ${plan.wait.breakoutTrigger.toFixed(2)} removes the cap.` : `A close above ${plan.wait.breakoutTrigger.toFixed(2)} is the level that changes it.`}`,
+      tone: "neutral",
+    });
+  }
+
+  if (plan?.rewardNote) {
+    points.push({ label: "Payoff", text: plan.rewardNote, tone: "neutral" });
+  }
+
+  // The prose form is kept for the API and for page metadata, where a single
+  // string is what the consumer wants.
+  const parts = points.map((p) => p.text);
 
   const keyPoints: string[] = [];
   for (const g of groups) {
@@ -813,7 +1185,40 @@ function buildNarrative(
     );
   }
 
-  return { narrative: parts.join(" "), keyPoints, risks };
+  return { narrative: parts.join(" "), narrativePoints: points, keyPoints, risks };
+}
+
+/**
+ * The single most significant reading in a group.
+ *
+ * Significance is absolute score, not sign: a strongly bearish reading inside
+ * a mildly bullish group is the thing the reader most needs to see.
+ */
+function dominant(group: SignalGroup): SignalReading | undefined {
+  return [...group.readings].sort((a, b) => Math.abs(b.score) - Math.abs(a.score))[0];
+}
+
+function toneOf(score: number): NarrativePoint["tone"] {
+  return score >= 20 ? "bullish" : score <= -20 ? "bearish" : "neutral";
+}
+
+function capitalise(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/**
+ * Trim a multi-sentence conclusion to its first sentence.
+ *
+ * Indicator conclusions are written at length for the expandable detail cards,
+ * where the reader has asked for depth. In the summary they have not, and
+ * three of them side by side is how the wall of text formed in the first
+ * place. Decimals are protected so "1.5% of price" does not split.
+ */
+function firstSentence(value: string): string {
+  if (!value) return "";
+  const match = value.match(/^.*?[.!?](?=\s+[A-Z(]|$)/s);
+  const first = (match?.[0] ?? value).trim();
+  return first.length > 0 ? first : value.trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -883,7 +1288,7 @@ export function analyzeTechnical(
 
   const plan = verdict === "avoid" || verdict === "reduce" ? null : buildTradePlan(data, horizon);
 
-  const { narrative, keyPoints, risks } = buildNarrative(
+  const { narrative, narrativePoints, keyPoints, risks } = buildNarrative(
     symbol,
     groups,
     compositeScore,
@@ -922,6 +1327,7 @@ export function analyzeTechnical(
     },
     plan,
     narrative,
+    narrativePoints,
     keyPoints,
     risks,
     narrativeSource: "engine",

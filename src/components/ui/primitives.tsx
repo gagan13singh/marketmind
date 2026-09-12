@@ -49,6 +49,11 @@ export function ScoreBar({ score, height = 6 }: { score: number; height?: number
 const PROVIDER_LABEL: Record<DataProvider, string> = {
   angelone: "Angel One",
   yahoo: "Yahoo Finance",
+  // Filings collected from NSE by the offline ingest, read from disk at
+  // request time. Named separately from a live NSE call so the badge does not
+  // imply a freshness the dataset does not have.
+  "nse-dataset": "NSE filings",
+  nse: "NSE",
   sample: "generated",
 };
 

@@ -46,6 +46,8 @@ const RATE = {
 
 export type AngelFailure =
   | "not-configured"
+  /** Instrument master still downloading. Transient, and heals by itself. */
+  | "loading"
   | "auth-failed"
   | "throttled"
   | "unauthorized"

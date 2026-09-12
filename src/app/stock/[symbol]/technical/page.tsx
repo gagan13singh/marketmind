@@ -47,6 +47,7 @@ export default async function TechnicalPage({ params }: { params: Promise<{ symb
         ) : (
           <>
             <TechnicalWorkspace
+              symbol={symbol}
               candles={history.data}
               analyses={{
                 "swing-daily": swing,
