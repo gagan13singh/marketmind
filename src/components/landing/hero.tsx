@@ -38,10 +38,11 @@ export function Hero() {
       <div className="relative mx-auto max-w-[1400px] px-4 pb-20 pt-6 sm:px-6 lg:pb-28">
         {/* Minimal top bar — the landing page has no product chrome. */}
         <div className="flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2.5">
+          <Link href="/" className="flex items-center gap-2 group">
             <Logo />
-            <span className="font-display text-lg tracking-tight">
-              MarketMind
+            <span className="font-display text-[1.1rem] font-medium tracking-tight transition-opacity group-hover:opacity-85">
+              <span className="text-[var(--color-paper)]">Market</span>
+              <span style={{ color: "#3fb68b" }}>Mind</span>
             </span>
           </Link>
           <div className="flex items-center gap-2">
@@ -73,7 +74,7 @@ export function Hero() {
             >
               Stop reading charts.
               <br />
-              Read the conclusion.
+              <span className="text-gradient">Read the conclusion.</span>
             </motion.h1>
 
             <motion.p
