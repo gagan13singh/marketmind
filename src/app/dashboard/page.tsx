@@ -15,7 +15,7 @@ import type { DataOrigin, Verdict } from "@/types";
 
 export const metadata: Metadata = {
   title: "Dashboard",
-  description: "Market overview and the strongest swing and positional setups right now.",
+  description: "Market overview and the strongest swing and positional setups right now across NSE.",
 };
 
 /**
@@ -85,7 +85,9 @@ export default function DashboardPage() {
 
       <main className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6">
         <header className="mb-8 max-w-2xl">
-          <h1 className="text-3xl sm:text-4xl">Dashboard</h1>
+          <h1 className="text-3xl sm:text-4xl">
+            Dashboard
+          </h1>
           <p className="mt-3 text-[var(--color-paper-dim)]">
             A swing-horizon read on the most liquid NSE names, scored on daily candles.
           </p>
@@ -296,8 +298,12 @@ async function ScanSections() {
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {strongest.map((r) => (
-              <Link key={r.symbol} href={`/stock/${encodeURIComponent(r.symbol)}`} className="surface p-4">
+            {strongest.map((r, i) => (
+              <Link
+                key={r.symbol}
+                href={`/stock/${encodeURIComponent(r.symbol)}`}
+                className={`surface p-4 animate-fade-up stagger-${Math.min(i + 1, 6)}`}
+              >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <h3 className="truncate text-base">{r.name}</h3>
