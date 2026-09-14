@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
@@ -18,13 +19,15 @@ export function AppNav() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <header className="sticky top-0 z-40 border-b border-[color-mix(in_oklab,var(--color-ink-600)_45%,transparent)] bg-[color-mix(in_oklab,var(--color-ink-900)_88%,transparent)] backdrop-blur-xl">
+    <header className="sticky top-0 z-40 border-b border-[color-mix(in_oklab,var(--color-ink-600)_40%,transparent)] bg-[color-mix(in_oklab,var(--color-ink-950)_85%,transparent)] backdrop-blur-2xl shadow-[0_1px_0_0_color-mix(in_oklab,var(--color-ink-600)_30%,transparent)]">
       <div className="mx-auto flex h-16 max-w-[1400px] items-center gap-4 px-4 sm:px-6">
-        <Link href="/" className="flex shrink-0 items-center gap-2.5" aria-label="MarketMind home">
+        {/* ── Brand ──────────────────────────────────────────────────── */}
+        <Link href="/" className="flex shrink-0 items-center gap-2 group" aria-label="MarketMind home">
           <Logo />
-          <span className="font-display text-lg tracking-tight">MarketMind</span>
+          <Wordmark />
         </Link>
 
+        {/* ── Desktop nav ─────────────────────────────────────────────── */}
         <nav className="hidden items-center gap-1 md:flex" aria-label="Main">
           {NAV.map((item) => {
             const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
@@ -33,10 +36,10 @@ export function AppNav() {
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "rounded-full px-3.5 py-1.5 text-sm transition-colors",
+                  "rounded-full px-3.5 py-1.5 text-sm transition-all duration-150",
                   isActive
-                    ? "bg-[var(--color-ink-700)] text-[var(--color-paper)]"
-                    : "text-[var(--color-paper-dim)] hover:text-[var(--color-paper)]",
+                    ? "bg-[color-mix(in_oklab,var(--color-signal-500)_12%,transparent)] text-[var(--color-paper)] border border-[color-mix(in_oklab,var(--color-signal-500)_25%,transparent)] shadow-[0_0_12px_rgba(242,169,59,0.1)]"
+                    : "text-[var(--color-paper-dim)] hover:text-[var(--color-paper)] hover:bg-[color-mix(in_oklab,var(--color-ink-800)_60%,transparent)] border border-transparent",
                 )}
               >
                 {item.label}
@@ -45,80 +48,118 @@ export function AppNav() {
           })}
         </nav>
 
+        {/* ── Desktop search ───────────────────────────────────────────── */}
         <div className="ml-auto hidden w-full max-w-md lg:block">
           <SymbolSearch />
         </div>
 
+        {/* ── Hamburger ───────────────────────────────────────────────── */}
         <button
           type="button"
           onClick={() => setMobileOpen((v) => !v)}
-          className="ml-auto grid size-9 place-items-center rounded-lg border border-[var(--color-ink-600)] text-[var(--color-paper-dim)] md:hidden"
+          className="ml-auto grid size-9 shrink-0 place-items-center rounded-lg border border-[var(--color-ink-600)] text-[var(--color-paper-dim)] transition-colors hover:border-[var(--color-ink-500,#2a3a58)] hover:text-[var(--color-paper)] md:hidden"
           aria-label={mobileOpen ? "Close menu" : "Open menu"}
           aria-expanded={mobileOpen}
         >
-          {mobileOpen ? <X size={18} /> : <Menu size={18} />}
+          <span
+            className="transition-all duration-200"
+            style={{ transform: mobileOpen ? "rotate(90deg)" : "rotate(0deg)" }}
+          >
+            {mobileOpen ? <X size={18} /> : <Menu size={18} />}
+          </span>
         </button>
       </div>
 
-      {mobileOpen && (
-        <div className="border-t border-[var(--color-ink-700)] px-4 py-4 md:hidden">
+      {/* ── Mobile panel ──────────────────────────────────────────────── */}
+      <div
+        className={cn(
+          "overflow-hidden transition-all duration-300 ease-in-out md:hidden",
+          mobileOpen ? "max-h-[400px] opacity-100" : "max-h-0 opacity-0 pointer-events-none",
+        )}
+        aria-hidden={!mobileOpen}
+      >
+        <div className="border-t border-[var(--color-ink-700)] px-4 pb-4 pt-3">
           <SymbolSearch />
-          <nav className="mt-3 flex flex-col gap-1" aria-label="Mobile">
-            {NAV.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setMobileOpen(false)}
-                className="rounded-lg px-3 py-2 text-sm text-[var(--color-paper-dim)] hover:bg-[var(--color-ink-800)] hover:text-[var(--color-paper)]"
-              >
-                {item.label}
-              </Link>
-            ))}
+          <nav className="mt-3 flex flex-col gap-0.5" aria-label="Mobile">
+            {NAV.map((item) => {
+              const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={() => setMobileOpen(false)}
+                  className={cn(
+                    "rounded-lg px-3 py-2.5 text-sm transition-colors",
+                    isActive
+                      ? "bg-[color-mix(in_oklab,var(--color-signal-500)_10%,transparent)] text-[var(--color-paper)]"
+                      : "text-[var(--color-paper-dim)] hover:bg-[var(--color-ink-800)] hover:text-[var(--color-paper)]",
+                  )}
+                >
+                  {item.label}
+                </Link>
+              );
+            })}
           </nav>
         </div>
-      )}
+      </div>
 
-      <div className="px-4 pb-3 lg:hidden sm:px-6">
-        <div className="hidden md:block">
-          <SymbolSearch />
-        </div>
+      {/* ── Tablet search (md only) ─────────────────────────────────── */}
+      <div className="hidden border-t border-[var(--color-ink-700)] px-4 pb-3 md:block lg:hidden sm:px-6">
+        <SymbolSearch />
       </div>
     </header>
   );
 }
 
-export function Logo({ size = 26 }: { size?: number }) {
+/**
+ * Real brand logo — the JPG provided by the design brief.
+ * We show it as a crisp square at the requested size.
+ */
+export function Logo({ size = 30 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <rect width="32" height="32" rx="8" fill="var(--color-ink-700)" />
-      {/* A rising structure of higher lows — the product's core idea in a mark. */}
-      <path
-        d="M7 22.5L12 17.5L16.5 21L25 10"
-        stroke="var(--color-signal-500)"
-        strokeWidth="2.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle cx="25" cy="10" r="2.6" fill="var(--color-signal-500)" />
-    </svg>
+    <Image
+      src="/icons/logo.png"
+      alt="MarketMind logo"
+      width={size}
+      height={size}
+      className="rounded-lg"
+      priority
+    />
+  );
+}
+
+/**
+ * Wordmark that matches the actual logo: "Market" white, "Mind" emerald-green.
+ * Using the exact green from the logo (#22c55e) rather than the data-encoding
+ * bull colour so the wordmark stays consistent regardless of market conditions.
+ */
+function Wordmark() {
+  return (
+    <span className="font-display text-[1.1rem] font-medium tracking-tight leading-none transition-opacity duration-150 group-hover:opacity-85">
+      <span className="text-[var(--color-paper)]">Market</span>
+      <span style={{ color: "#3fb68b" }}>Mind</span>
+    </span>
   );
 }
 
 export function AppFooter() {
   return (
-    <footer className="mt-16 border-t border-[color-mix(in_oklab,var(--color-ink-600)_40%,transparent)]">
+    <footer className="mt-16">
+      <div className="divider" />
       <div className="mx-auto max-w-[1400px] px-4 py-8 sm:px-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2.5">
-            <Logo size={20} />
-            <span className="text-sm text-[var(--color-paper-dim)]">
-              MarketMind — swing and positional analysis
+            <Logo size={22} />
+            <span className="text-sm">
+              <span className="text-[var(--color-paper)]">Market</span>
+              <span style={{ color: "#3fb68b" }} className="font-medium">Mind</span>
+              <span className="ml-1.5 text-[var(--color-paper-faint)]">— Think Markets Ahead</span>
             </span>
           </div>
           <nav className="flex gap-4 text-sm text-[var(--color-paper-faint)]" aria-label="Footer">
-            <Link href="/dashboard" className="hover:text-[var(--color-paper)]">Dashboard</Link>
-            <Link href="/screener" className="hover:text-[var(--color-paper)]">Screener</Link>
-            <Link href="/backtest" className="hover:text-[var(--color-paper)]">Backtest</Link>
+            <Link href="/dashboard" className="transition-colors hover:text-[var(--color-paper)]">Dashboard</Link>
+            <Link href="/screener" className="transition-colors hover:text-[var(--color-paper)]">Screener</Link>
+            <Link href="/backtest" className="transition-colors hover:text-[var(--color-paper)]">Backtest</Link>
           </nav>
         </div>
         <p className="mt-6 max-w-3xl text-xs leading-relaxed text-[var(--color-paper-faint)]">
