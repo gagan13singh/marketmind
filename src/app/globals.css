@@ -388,3 +388,75 @@
     linear-gradient(90deg, color-mix(in oklab, var(--color-ink-600) 22%, transparent) 1px, transparent 1px);
   background-size: 56px 56px;
 }
+
+/* --- Premium Accents & Gradients ---------------------------------------- */
+.text-gradient {
+  background: linear-gradient(135deg, #eef2f8 30%, #3fb68b 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.text-gradient-gold {
+  background: linear-gradient(135deg, #f7c26b 20%, #f2a93b 80%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* --- Refined Micro-Animations ------------------------------------------- */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tab-fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 16px rgba(242, 169, 59, 0.22);
+  }
+  50% {
+    box-shadow: 0 0 28px rgba(242, 169, 59, 0.45);
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-tab-content {
+  animation: tab-fade 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 3s ease-in-out infinite;
+}
+
+.stagger-1 { animation-delay: 40ms; }
+.stagger-2 { animation-delay: 80ms; }
+.stagger-3 { animation-delay: 120ms; }
+.stagger-4 { animation-delay: 160ms; }
+.stagger-5 { animation-delay: 200ms; }
+.stagger-6 { animation-delay: 240ms; }
+
+.overflow-panel {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
