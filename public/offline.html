@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>You're offline · MarketMind</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #050a12;
+      color: #eef2f8;
+      font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .card {
+      max-width: 420px;
+      text-align: center;
+      padding: 2.5rem 2rem;
+      background: #0c1422;
+      border: 1px solid #1f2d45;
+      border-radius: 16px;
+    }
+    .icon {
+      width: 56px;
+      height: 56px;
+      margin: 0 auto 1.5rem;
+      background: #182135;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 400;
+      letter-spacing: -0.018em;
+      margin-bottom: 0.75rem;
+    }
+    p {
+      font-size: 0.875rem;
+      color: #a9b6cc;
+      line-height: 1.65;
+      margin-bottom: 1.75rem;
+    }
+    button {
+      background: linear-gradient(135deg, #f7c26b, #f2a93b);
+      color: #050a12;
+      border: none;
+      border-radius: 999px;
+      padding: 0.625rem 1.5rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">
+      <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+        <defs>
+          <linearGradient id="g" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#f7c26b"/>
+            <stop offset="100%" stop-color="#3fb68b"/>
+          </linearGradient>
+        </defs>
+        <path d="M6 23 L10.5 13 L16 19 L21.5 13 L26 23" stroke="url(#g)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M21.5 13 L24.5 10 L27.5 13" stroke="#3fb68b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </svg>
+    </div>
+    <h1>You're offline</h1>
+    <p>
+      MarketMind needs a connection to fetch live market data and run analysis.
+      Check your network and try again.
+    </p>
+    <button onclick="window.location.reload()">Try again</button>
+  </div>
+</body>
+</html>

@@ -80,7 +80,7 @@ export function Pipeline() {
           <h2 className="text-3xl sm:text-4xl">
             What happens between
             <br />
-            the chart and the call
+            <span className="text-gradient">the chart and the call</span>
           </h2>
           <p className="mt-5 max-w-md text-[var(--color-paper-dim)]">
             Most tools stop at drawing the indicator. The work that matters is
@@ -204,7 +204,7 @@ export function Modules() {
       aria-label="Modules"
     >
       <h2 className="max-w-2xl text-3xl sm:text-4xl">
-        Four tools that share one engine
+        Four tools that share <span className="text-gradient-gold">one engine</span>
       </h2>
       <p className="mt-4 max-w-2xl text-[var(--color-paper-dim)]">
         The score you see in a screener result is computed the same way as the
@@ -263,7 +263,7 @@ export function HorizonSection() {
               aria-hidden="true"
             />
             <h2 className="mt-5 text-3xl sm:text-4xl">
-              No intraday. On purpose.
+              No intraday. <span className="text-gradient-gold">On purpose.</span>
             </h2>
             <p className="mt-5 text-[var(--color-paper-dim)]">
               Intraday analysis is a different discipline with different data
@@ -393,16 +393,18 @@ export function HonestySection() {
 export function ClosingCta() {
   return (
     <section className="mx-auto max-w-[1400px] px-4 pb-24 sm:px-6">
-      <div className="surface-raised grid-lines overflow-hidden px-6 py-16 text-center sm:px-12">
+      <div className="surface-raised grid-lines overflow-hidden px-6 py-20 text-center sm:px-12">
+        <p className="text-sm text-[var(--color-signal-400)] tracking-widest uppercase font-medium mb-4">Free · No account required</p>
         <h2 className="mx-auto max-w-2xl text-3xl sm:text-4xl">
-          Pick a stock. Get the workup in about a second.
+          Pick a stock. Get the workup
+          <br /><span className="text-gradient">in about a second.</span>
         </h2>
-        <p className="mx-auto mt-4 max-w-xl text-[var(--color-paper-dim)]">
+        <p className="mx-auto mt-5 max-w-xl text-[var(--color-paper-dim)]">
           No account, no key, no setup. The engine runs on public market data
           and works out of the box.
         </p>
-        <div className="mt-8 flex flex-wrap justify-center gap-3">
-          <Link href="/dashboard" className="btn btn-primary">
+        <div className="mt-10 flex flex-wrap justify-center gap-3">
+          <Link href="/dashboard" className="btn btn-primary animate-glow-pulse">
             Open the desk
           </Link>
           <Link href="/screener" className="btn btn-ghost">

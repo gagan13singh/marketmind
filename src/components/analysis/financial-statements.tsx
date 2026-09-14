@@ -47,12 +47,14 @@ export function FinancialStatements({ snapshot }: { snapshot: FundamentalSnapsho
         ))}
       </div>
 
-      <div className="overflow-x-auto p-1">
-        {tab === "pl" && <ProfitLossTable snapshot={snapshot} periods="annual" />}
-        {tab === "quarterly" && <ProfitLossTable snapshot={snapshot} periods="quarterly" />}
-        {tab === "balance" && <BalanceSheetTable snapshot={snapshot} />}
-        {tab === "cashflow" && <CashFlowTable snapshot={snapshot} />}
-        {tab === "shareholding" && <ShareholdingPanel snapshot={snapshot} />}
+      <div className="overflow-panel">
+        <div key={tab} className="min-w-[640px] p-1 animate-tab-content">
+          {tab === "pl" && <ProfitLossTable snapshot={snapshot} periods="annual" />}
+          {tab === "quarterly" && <ProfitLossTable snapshot={snapshot} periods="quarterly" />}
+          {tab === "balance" && <BalanceSheetTable snapshot={snapshot} />}
+          {tab === "cashflow" && <CashFlowTable snapshot={snapshot} />}
+          {tab === "shareholding" && <ShareholdingPanel snapshot={snapshot} />}
+        </div>
       </div>
     </div>
   );
