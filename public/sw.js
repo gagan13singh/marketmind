@@ -11,7 +11,7 @@
  *  a version bump here is sufficient to invalidate everything.
  */
 
-const CACHE_VERSION = "marketmind-v1";
+const CACHE_VERSION = "marketmind-v3";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const API_CACHE = `${CACHE_VERSION}-api`;
 
