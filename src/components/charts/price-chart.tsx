@@ -436,7 +436,7 @@ export function PriceChart({
           </button>
 
           {menuOpen && (
-            <div className="absolute left-0 top-[calc(100%+6px)] z-50 w-[320px] overflow-hidden rounded-xl border border-[var(--color-ink-600)] bg-[var(--color-ink-850)] shadow-2xl">
+            <div className="animate-scale-in absolute left-0 top-[calc(100%+6px)] z-50 w-[min(320px,calc(100vw-2rem))] origin-top-left overflow-hidden rounded-xl border border-[var(--color-ink-600)] bg-[var(--color-ink-850)] shadow-2xl">
               <div className="flex items-center justify-between gap-2 border-b border-[var(--color-ink-700)] px-3 py-2.5">
                 <span className="label">
                   {active.length === 0 ? "Naked chart" : `${active.length} active`}
@@ -533,7 +533,7 @@ export function PriceChart({
           No price history available for this symbol.
         </div>
       ) : (
-        <div ref={containerRef} className="w-full" style={{ height: chartHeight }} />
+        <div ref={containerRef} className="chart-frame w-full min-w-0" style={{ height: chartHeight }} />
       )}
     </div>
   );

@@ -69,11 +69,7 @@ export function Pipeline() {
   });
 
   return (
-    <section
-      ref={ref}
-      className="relative mx-auto max-w-[1400px] px-4 sm:px-6"
-      aria-label="How the analysis works"
-    >
+    <section ref={ref} className="shell relative" aria-label="How the analysis works">
       <div className="grid gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:gap-16">
         {/* Sticky side keeps the current stage anchored while text scrolls. */}
         <div className="lg:sticky lg:top-24 lg:h-fit lg:py-24">
@@ -95,14 +91,9 @@ export function Pipeline() {
           )}
         </div>
 
-        <ol className="space-y-6 py-8 lg:py-24">
+        <ol className="space-y-5 py-10 sm:space-y-6 sm:py-14 lg:py-24">
           {STAGES.map((stage, i) => (
-            <StageCard
-              key={stage.title}
-              stage={stage}
-              index={i}
-              reduce={!!reduce}
-            />
+            <StageCard key={stage.title} stage={stage} index={i} reduce={!!reduce} />
           ))}
         </ol>
       </div>
@@ -113,10 +104,10 @@ export function Pipeline() {
 function ProgressRail({ progress }: { progress: MotionValue<number> }) {
   const height = useTransform(progress, [0, 1], ["0%", "100%"]);
   return (
-    <div className="relative h-40 w-px bg-[var(--color-ink-700)]">
+    <div className="relative h-40 w-px overflow-hidden rounded-full bg-[var(--color-ink-700)]">
       <motion.div
         style={{ height }}
-        className="absolute left-0 top-0 w-px bg-[var(--color-signal-500)]"
+        className="absolute left-0 top-0 w-px rounded-full bg-[var(--color-signal-500)] shadow-[0_0_10px_rgba(242,169,59,0.6)]"
       />
     </div>
   );
@@ -137,26 +128,20 @@ function StageCard({
       whileInView={reduce ? undefined : { opacity: 1, y: 0 }}
       viewport={{ once: true, margin: "-80px" }}
       transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-      className="surface p-6"
+      className="surface surface-interactive p-5 sm:p-6"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           {/* Numbering is used here because this genuinely is a sequence. */}
-          <span className="metric text-xs text-[var(--color-signal-500)]">
-            Stage {index + 1}
-          </span>
-          <h3 className="mt-2 text-xl">{stage.title}</h3>
+          <span className="eyebrow">Stage {index + 1}</span>
+          <h3 className="mt-2 text-lg sm:text-xl">{stage.title}</h3>
           <p className="mt-2.5 max-w-lg text-sm leading-relaxed text-[var(--color-paper-dim)]">
             {stage.body}
           </p>
         </div>
         <div className="hidden shrink-0 text-right sm:block">
-          <div className="metric text-sm text-[var(--color-paper)]">
-            {stage.metric}
-          </div>
-          <div className="mt-0.5 text-xs text-[var(--color-paper-faint)]">
-            {stage.detail}
-          </div>
+          <div className="metric text-sm text-[var(--color-paper)]">{stage.metric}</div>
+          <div className="mt-0.5 text-xs text-[var(--color-paper-faint)]">{stage.detail}</div>
         </div>
       </div>
     </motion.li>
@@ -199,10 +184,7 @@ const MODULES = [
 export function Modules() {
   const reduce = useSafeReducedMotion();
   return (
-    <section
-      className="mx-auto max-w-[1400px] px-4 py-24 sm:px-6"
-      aria-label="Modules"
-    >
+    <section className="shell py-16 sm:py-20 lg:py-24" aria-label="Modules">
       <h2 className="max-w-2xl text-3xl sm:text-4xl">
         Four tools that share <span className="text-gradient-gold">one engine</span>
       </h2>
@@ -212,33 +194,24 @@ export function Modules() {
         running behind the list.
       </p>
 
-      <div className="mt-12 grid gap-4 sm:grid-cols-2">
+      <div className="mt-10 grid gap-4 sm:mt-12 sm:grid-cols-2">
         {MODULES.map((m, i) => (
           <motion.article
             key={m.title}
             initial={reduce ? undefined : { opacity: 0, y: 20 }}
             whileInView={reduce ? undefined : { opacity: 1, y: 0 }}
             viewport={{ once: true, margin: "-60px" }}
-            transition={{
-              duration: 0.5,
-              delay: i * 0.06,
-              ease: [0.22, 1, 0.36, 1],
-            }}
-            className="surface flex flex-col p-6"
+            transition={{ duration: 0.5, delay: i * 0.06, ease: [0.22, 1, 0.36, 1] }}
+            className="surface surface-interactive flex flex-col p-5 sm:p-6"
           >
-            <m.icon
-              size={22}
-              className="text-[var(--color-signal-500)]"
-              aria-hidden="true"
-            />
-            <h3 className="mt-4 text-xl">{m.title}</h3>
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[color-mix(in_oklab,var(--color-signal-500)_14%,transparent)]">
+              <m.icon size={20} className="text-[var(--color-signal-500)]" aria-hidden="true" />
+            </span>
+            <h3 className="mt-4 text-lg sm:text-xl">{m.title}</h3>
             <p className="mt-2.5 flex-1 text-sm leading-relaxed text-[var(--color-paper-dim)]">
               {m.body}
             </p>
-            <Link
-              href={m.href}
-              className="mt-5 inline-flex w-fit items-center gap-1.5 text-sm text-[var(--color-signal-400)] hover:text-[var(--color-signal-500)]"
-            >
+            <Link href={m.href} className="link-underline mt-5 inline-flex w-fit items-center gap-1.5 text-sm">
               {m.linkLabel}
             </Link>
           </motion.article>
@@ -253,15 +226,13 @@ export function Modules() {
 export function HorizonSection() {
   const reduce = useSafeReducedMotion();
   return (
-    <section className="border-y border-[color-mix(in_oklab,var(--color-ink-600)_40%,transparent)] bg-[var(--color-ink-950)]">
-      <div className="mx-auto max-w-[1400px] px-4 py-24 sm:px-6">
-        <div className="grid gap-12 lg:grid-cols-[0.85fr_1.15fr] lg:gap-16">
+    <section className="border-y border-[var(--line)] bg-[var(--color-ink-950)]">
+      <div className="shell py-16 sm:py-20 lg:py-24">
+        <div className="grid gap-10 lg:grid-cols-[0.85fr_1.15fr] lg:gap-16">
           <div>
-            <Layers
-              size={24}
-              className="text-[var(--color-signal-500)]"
-              aria-hidden="true"
-            />
+            <span className="grid size-11 place-items-center rounded-xl bg-[color-mix(in_oklab,var(--color-signal-500)_14%,transparent)]">
+              <Layers size={22} className="text-[var(--color-signal-500)]" aria-hidden="true" />
+            </span>
             <h2 className="mt-5 text-3xl sm:text-4xl">
               No intraday. <span className="text-gradient-gold">On purpose.</span>
             </h2>
@@ -308,25 +279,18 @@ export function HorizonSection() {
                 whileInView={reduce ? undefined : { opacity: 1, y: 0 }}
                 viewport={{ once: true, margin: "-60px" }}
                 transition={{ duration: 0.5, delay: i * 0.08 }}
-                className="surface p-6"
+                className="surface p-5 sm:p-6"
               >
-                <div className="flex items-baseline justify-between">
-                  <h3 className="text-2xl">{h.name}</h3>
-                  <span className="metric text-sm text-[var(--color-signal-400)]">
-                    {h.window}
-                  </span>
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <h3 className="text-xl sm:text-2xl">{h.name}</h3>
+                  <span className="metric text-sm text-[var(--color-signal-400)]">{h.window}</span>
                 </div>
-                <p className="mt-2 text-sm text-[var(--color-paper-faint)]">
-                  {h.lead}
-                </p>
+                <p className="mt-2 text-sm text-[var(--color-paper-faint)]">{h.lead}</p>
                 <ul className="mt-5 space-y-2.5">
                   {h.points.map((p) => (
-                    <li
-                      key={p}
-                      className="flex gap-2.5 text-sm text-[var(--color-paper-dim)]"
-                    >
+                    <li key={p} className="flex gap-2.5 text-sm text-[var(--color-paper-dim)]">
                       <span className="mt-2 size-1 shrink-0 rounded-full bg-[var(--color-signal-500)]" />
-                      {p}
+                      <span className="min-w-0">{p}</span>
                     </li>
                   ))}
                 </ul>
@@ -343,17 +307,13 @@ export function HorizonSection() {
 
 export function HonestySection() {
   return (
-    <section className="mx-auto max-w-[1400px] px-4 py-24 sm:px-6">
+    <section className="shell py-16 sm:py-20 lg:py-24">
       <div className="grid gap-10 lg:grid-cols-[0.8fr_1.2fr] lg:gap-16">
         <div>
-          <ShieldAlert
-            size={24}
-            className="text-[var(--color-signal-500)]"
-            aria-hidden="true"
-          />
-          <h2 className="mt-5 text-3xl sm:text-4xl">
-            What this tool will not do
-          </h2>
+          <span className="grid size-11 place-items-center rounded-xl bg-[color-mix(in_oklab,var(--color-bear-500)_14%,transparent)]">
+            <ShieldAlert size={22} className="text-[var(--color-bear-400)]" aria-hidden="true" />
+          </span>
+          <h2 className="mt-5 text-3xl sm:text-4xl">What this tool will not do</h2>
         </div>
         <div className="space-y-5">
           {[
@@ -376,9 +336,9 @@ export function HonestySection() {
           ].map((item) => (
             <div
               key={item.q}
-              className="border-l-2 border-[var(--color-ink-600)] pl-5"
+              className="border-l-2 border-[var(--color-ink-600)] pl-4 transition-colors duration-200 hover:border-[var(--color-signal-500)] sm:pl-5"
             >
-              <h3 className="font-display text-xl">{item.q}</h3>
+              <h3 className="font-display text-lg sm:text-xl">{item.q}</h3>
               <p className="mt-2 max-w-2xl text-sm leading-relaxed text-[var(--color-paper-dim)]">
                 {item.a}
               </p>
@@ -392,12 +352,13 @@ export function HonestySection() {
 
 export function ClosingCta() {
   return (
-    <section className="mx-auto max-w-[1400px] px-4 pb-24 sm:px-6">
-      <div className="surface-raised grid-lines overflow-hidden px-6 py-20 text-center sm:px-12">
-        <p className="text-sm text-[var(--color-signal-400)] tracking-widest uppercase font-medium mb-4">Free · No account required</p>
+    <section className="shell pb-16 sm:pb-20 lg:pb-24">
+      <div className="surface-raised grid-lines relative overflow-hidden px-5 py-14 text-center sm:px-12 sm:py-16 lg:py-20">
+        <p className="eyebrow mb-4">Free · No account required</p>
         <h2 className="mx-auto max-w-2xl text-3xl sm:text-4xl">
           Pick a stock. Get the workup
-          <br /><span className="text-gradient">in about a second.</span>
+          <br />
+          <span className="text-gradient">in about a second.</span>
         </h2>
         <p className="mx-auto mt-5 max-w-xl text-[var(--color-paper-dim)]">
           No account, no key, no setup. The engine runs on public market data

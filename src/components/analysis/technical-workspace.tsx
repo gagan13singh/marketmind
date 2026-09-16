@@ -75,7 +75,7 @@ export function TechnicalWorkspace({
     <div className="space-y-6">
       {/* --- Horizon switch: the most important control on the page ------- */}
       <div className="flex flex-wrap items-center gap-4">
-        <div className="flex gap-1 rounded-xl border border-[var(--color-ink-700)] p-1">
+        <div className="flex w-full gap-1 rounded-xl border border-[var(--color-ink-700)] p-1 sm:w-auto">
           {(["swing", "positional"] as const).map((h) => (
             <button
               key={h}
@@ -86,7 +86,7 @@ export function TechnicalWorkspace({
               }}
               aria-pressed={horizon === h}
               className={cn(
-                "rounded-lg px-4 py-2 text-sm transition-colors",
+                "flex-1 rounded-lg px-3 py-2.5 text-sm transition-colors sm:flex-none sm:px-4",
                 horizon === h
                   ? "bg-[var(--color-ink-700)] text-[var(--color-paper)]"
                   : "text-[var(--color-paper-faint)] hover:text-[var(--color-paper-dim)]",

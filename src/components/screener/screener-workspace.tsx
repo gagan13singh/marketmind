@@ -150,7 +150,7 @@ export function ScreenerWorkspace() {
                       value: f?.defaultValue ?? 0,
                     });
                   }}
-                  className="field w-full sm:w-56"
+                  className="field w-full min-w-0 sm:w-56"
                   aria-label="Field"
                 >
                   {["Price & Liquidity", "Technical"].map((group) => (

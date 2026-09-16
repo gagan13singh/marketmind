@@ -61,7 +61,7 @@ export function BacktestWorkspace() {
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[340px_1fr] lg:items-start">
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)] lg:items-start">
       {/* --- Controls ----------------------------------------------------- */}
       <aside className="surface space-y-5 p-5 lg:sticky lg:top-24">
         <div>
@@ -424,5 +424,5 @@ function EquityChart({ result }: { result: BacktestResult }) {
     };
   }, [data]);
 
-  return <div ref={containerRef} className="mt-4 w-full" style={{ height: 280 }} />;
+  return <div ref={containerRef} className="chart-frame mt-4 w-full min-w-0" style={{ height: 280 }} />;
 }
